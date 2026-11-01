@@ -20,6 +20,8 @@ import threading
 import time
 from typing import Any
 
+from launch.profile_report import write_report
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -335,7 +337,9 @@ def run_profile(args: argparse.Namespace) -> int:
         candidates = list(output.glob(f"trace{suffix}")) + list(output.glob(f"trace*{suffix}"))
         if candidates:
             payload["artifacts"][suffix.removeprefix(".")] = str(candidates[0])
-    _json_dump(output / "summary.json", payload)
+    summary_path = output / "summary.json"
+    _json_dump(summary_path, payload)
+    write_report(summary_path, output / "report.html")
     return exit_code
 
 

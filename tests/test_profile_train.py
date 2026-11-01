@@ -4,6 +4,7 @@ import sys
 
 import pytest
 
+from launch.profile_report import render_report
 from launch.profile_train import _parse_args, build_command, read_metrics, summarize_metrics, summarize_telemetry
 
 
@@ -73,6 +74,33 @@ def test_build_command_is_bounded_and_research_only(tmp_path: Path, monkeypatch)
     nsys_command = build_command(args, tmp_path / "run")
     assert "--trace=cuda,nvtx,osrt" in nsys_command
     assert not any("nccl" in item for item in nsys_command)
+
+
+def test_render_report_is_static_and_human_readable():
+    html = render_report({
+        "status": "passed",
+        "metrics_summary": {
+            "warmup": {"steps": 1, "step_seconds": [6.2]},
+            "steady": {
+                "steps": 2, "median_step_seconds": 1.46,
+                "median_tokens_per_second": 11184,
+                "data_seconds_total": 0.002,
+                "optimizer_seconds_total": 0.84,
+                "peak_memory_bytes": 16793004032,
+            },
+        },
+        "telemetry_summary": {"per_gpu": [
+            {"index": 0, "uuid": "GPU-a", "gpu_util_mean_pct": 7.0,
+             "memory_used_peak_mib": 18758, "power_mean_w": 90.0, "sm_clock_mean_mhz": 1183.0},
+            {"index": 1, "uuid": "GPU-b", "gpu_util_mean_pct": 48.0,
+             "memory_used_peak_mib": 18774, "power_mean_w": 111.0, "sm_clock_mean_mhz": 1285.0},
+        ]},
+    })
+    assert "<!doctype html>" in html.lower()
+    assert "11,184" in html
+    assert "GPU 0" in html
+    assert "low utilization" in html.lower()
+    assert "http" not in html
 
 
 def test_summarize_telemetry_groups_by_uuid(tmp_path: Path):

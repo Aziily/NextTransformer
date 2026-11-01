@@ -29,6 +29,7 @@ The output directory contains:
 
 ```text
 summary.json       timing and telemetry summary
+report.html        static human-readable report generated from summary.json
 metadata.json      command, environment, versions, and Git commit
 telemetry.jsonl    sampled GPU telemetry keyed by UUID
 profile.log        trainer and profiler output
@@ -41,7 +42,7 @@ Open `.nsys-rep` in Nsight Systems. The installed Nsight versions may reject `--
 
 ## Read the summary
 
-`summary.json` separates `metrics_summary.warmup` from `metrics_summary.steady`. The steady section reports median step time and throughput, total data and optimizer time, and peak allocated memory. The `telemetry_summary.per_gpu` entries report utilization, memory, power, temperature, and SM clock for each GPU UUID during the profile interval.
+`summary.json` separates `metrics_summary.warmup` from `metrics_summary.steady`. The steady section reports median step time and throughput, total data and optimizer time, and peak allocated memory. The `telemetry_summary.per_gpu` entries report utilization, memory, power, temperature, and SM clock for each GPU UUID during the profile interval. `report.html` is a self-contained local page for a quick human view; it has no server, JavaScript bundle, or external assets.
 
 Compare steady-state values across runs. The first update often includes Inductor/Triton compilation and communicator setup, so it should not be used as the training throughput baseline.
 
