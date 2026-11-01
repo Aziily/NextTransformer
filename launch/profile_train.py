@@ -177,7 +177,23 @@ def summarize_telemetry(path: Path, interval_start: float, interval_end: float) 
                 "sm_clock_mean_mhz": statistics.mean(row["sm_clock"] for row in rows),
             }
         )
-    return {"interval_start": interval_start, "interval_end": interval_end, "per_gpu": per_gpu}
+    heatmap_samples = [
+        {
+            "time_offset_sec": round(sample["time"] - interval_start, 3),
+            "index": sample["index"],
+            "uuid": sample["uuid"],
+            "gpu_util": sample["gpu_util"],
+            "memory_used_pct": 100 * sample["memory_used"] / sample["memory_total"] if sample["memory_total"] else None,
+            "power": sample["power"],
+        }
+        for sample in sorted(samples, key=lambda row: (row["time"], row["index"]))
+    ]
+    return {
+        "interval_start": interval_start,
+        "interval_end": interval_end,
+        "per_gpu": per_gpu,
+        "samples": heatmap_samples,
+    }
 
 
 def _json_dump(path: Path, payload: Any) -> None:

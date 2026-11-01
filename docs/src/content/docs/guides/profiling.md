@@ -42,7 +42,9 @@ Open `.nsys-rep` in Nsight Systems. The installed Nsight versions may reject `--
 
 ## Read the summary
 
-`summary.json` separates `metrics_summary.warmup` from `metrics_summary.steady`. The steady section reports median step time and throughput, total data and optimizer time, and peak allocated memory. The `telemetry_summary.per_gpu` entries report utilization, memory, power, temperature, and SM clock for each GPU UUID during the profile interval. `report.html` is a self-contained local page for a quick human view; it has no server, JavaScript bundle, or external assets.
+`summary.json` separates `metrics_summary.warmup` from `metrics_summary.steady`. The steady section reports median step time and throughput, total data and optimizer time, and peak allocated memory. The `telemetry_summary.per_gpu` entries report utilization, memory, power, temperature, and SM clock for each GPU UUID during the profile interval. Heatmap v2 also stores a compact `telemetry_summary.samples` list with relative time offsets, so `report.html` can show a GPU-by-time grid. The report has a metric switch for GPU utilization, memory used percentage, power, and the derived wait/idle ratio; cells with no sample remain unavailable. A low-utilization warning is based on the captured telemetry, not on inferred kernel behavior.
+
+The report includes a compact training timeline. Data, forward/backward, gradient clipping, optimizer reduce/compute/gather, and synchronization stages are shown as `unavailable` unless the trainer emits stage timings. GPU telemetry alone does not identify optimizer or NCCL phases. The page is a self-contained local file with inline HTML, CSS, and JavaScript; it has no server, JavaScript bundle, or external assets.
 
 Compare steady-state values across runs. The first update often includes Inductor/Triton compilation and communicator setup, so it should not be used as the training throughput baseline.
 

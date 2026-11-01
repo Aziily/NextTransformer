@@ -103,6 +103,70 @@ def test_render_report_is_static_and_human_readable():
     assert "http" not in html
 
 
+def test_render_report_contains_gpu_time_heatmap_and_metric_switch():
+    html = render_report({
+        "status": "passed",
+        "metrics_summary": {
+            "warmup": {"steps": 1, "step_seconds": [6.2]},
+            "steady": {
+                "steps": 2, "median_step_seconds": 1.46,
+                "median_tokens_per_second": 11184,
+                "data_seconds_total": 0.002,
+                "optimizer_seconds_total": 0.84,
+                "peak_memory_bytes": 16793004032,
+            },
+        },
+        "telemetry_summary": {
+            "per_gpu": [
+                {"index": index, "uuid": f"GPU-{index}", "gpu_util_mean_pct": 48.0,
+                 "memory_used_peak_mib": 18758, "memory_used_peak_pct": 73.2,
+                 "power_mean_w": 111.0, "sm_clock_mean_mhz": 1285.0}
+                for index in range(8)
+            ],
+            "samples": [
+                {"time_offset_sec": 0.0, "index": 0, "uuid": "GPU-0", "gpu_util": 5.0,
+                 "memory_used_pct": 72.0, "power": 90.0},
+                {"time_offset_sec": 0.0, "index": 1, "uuid": "GPU-1", "gpu_util": 80.0,
+                 "memory_used_pct": 73.0, "power": 190.0},
+                {"time_offset_sec": 1.0, "index": 0, "uuid": "GPU-0", "gpu_util": 15.0,
+                 "memory_used_pct": 74.0, "power": 100.0},
+                {"time_offset_sec": 1.0, "index": 1, "uuid": "GPU-1", "gpu_util": 90.0,
+                 "memory_used_pct": 75.0, "power": 200.0},
+            ],
+        },
+    })
+
+    assert 'id="gpu-heatmap"' in html
+    assert html.count('<tr><th scope="row">GPU ') == 8
+    assert html.count('data-time-bucket="') == 16
+    assert 'value="gpu_util"' in html
+    assert 'value="memory_used_pct"' in html
+    assert 'value="power"' in html
+    assert 'class="heatmap-legend"' in html
+    assert "metric-switch" in html
+    assert "Low utilization" in html
+    assert "data-stage=" in html
+    assert "https://" not in html
+
+
+def test_summarize_telemetry_keeps_time_bucket_samples(tmp_path: Path):
+    path = tmp_path / "telemetry.jsonl"
+    path.write_text(
+        json.dumps({"time": 10.0, "index": 0, "uuid": "GPU-a", "memory_total": 24000,
+                    "memory_used": 12000, "gpu_util": 80, "power": 200, "temperature": 60, "sm_clock": 1700}) + "\n"
+        + json.dumps({"time": 11.0, "index": 0, "uuid": "GPU-a", "memory_total": 24000,
+                      "memory_used": 14000, "gpu_util": 60, "power": 180, "temperature": 61, "sm_clock": 1600}) + "\n"
+    )
+
+    result = summarize_telemetry(path, 10.0, 11.0)
+    assert result["samples"] == [
+        {"time_offset_sec": 0.0, "index": 0, "uuid": "GPU-a", "gpu_util": 80.0,
+         "memory_used_pct": 50.0, "power": 200.0},
+        {"time_offset_sec": 1.0, "index": 0, "uuid": "GPU-a", "gpu_util": 60.0,
+         "memory_used_pct": 58.333333333333336, "power": 180.0},
+    ]
+
+
 def test_summarize_telemetry_groups_by_uuid(tmp_path: Path):
     path = tmp_path / "telemetry.jsonl"
     path.write_text(
