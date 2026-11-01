@@ -23,10 +23,21 @@ def initialize(seed):
         torch.backends.cuda.matmul.allow_tf32=True
         torch.backends.cudnn.allow_tf32=True
     if world>1:
-        dist.init_process_group('nccl' if device.type=='cuda' else 'gloo')
+        initialize_process_group(device, world)
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
     if device.type=='cuda': torch.cuda.manual_seed_all(seed)
     return rank,world,device
+
+
+def initialize_process_group(device, world):
+    """Initialize distributed communication with an explicit CUDA device mapping."""
+    if world <= 1:
+        return
+    backend = 'nccl' if device.type == 'cuda' else 'gloo'
+    if device.type == 'cuda':
+        dist.init_process_group(backend, device_id=device)
+    else:
+        dist.init_process_group(backend)
 
 
 def autocast(device):
