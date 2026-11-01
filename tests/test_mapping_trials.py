@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from launch.mapping_trials import build_command, mapping_order
+from launch.mapping_trials import build_command, mapping_order, summarize_steady
 
 
 def test_mapping_presets_keep_all_devices_once():
@@ -30,3 +30,35 @@ def test_build_command_is_bounded_and_uses_mapping(tmp_path: Path):
     assert command[command.index("--smoke-steps") + 1] == "3"
     assert "--formal" not in command
     assert str(tmp_path / "run") in command
+
+
+def test_summarize_steady_uses_interpolated_percentiles_and_true_median():
+    rows = [
+        {"event": "train", "step_seconds": 10.0, "tokens_per_second": 100.0},
+        {"event": "train", "step_seconds": 1.0, "tokens_per_second": 200.0},
+        {"event": "train", "step_seconds": 2.0, "tokens_per_second": 300.0},
+        {"event": "train", "step_seconds": 3.0, "tokens_per_second": 400.0},
+        {"event": "train", "step_seconds": 4.0, "tokens_per_second": 500.0},
+    ]
+
+    result = summarize_steady(rows, warmup_steps=1)
+    assert result["steady_steps"] == 4
+    assert result["steady_step_seconds"] == [1.0, 2.0, 3.0, 4.0]
+    assert result["median_step_seconds"] == 2.5
+    assert result["p95_step_seconds"] == 3.85
+    assert result["median_tokens_per_second"] == 350.0
+    assert result["steady_complete"] is True
+
+
+def test_summarize_steady_handles_missing_samples():
+    assert summarize_steady([], warmup_steps=1) == {
+        "steady_steps": 0,
+        "steady_complete": False,
+        "steady_step_seconds": [],
+        "steady_tokens_per_second": [],
+        "median_step_seconds": None,
+        "p95_step_seconds": None,
+        "stdev_step_seconds": None,
+        "median_tokens_per_second": None,
+        "mean_tokens_per_second": None,
+    }

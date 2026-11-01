@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -66,6 +67,39 @@ def build_command(*, repo: Path, site_config: Path, config: Path, output: Path,
     ]
 
 
+def _percentile(values: list[float], fraction: float) -> float | None:
+    """Return an interpolated percentile with the same sample convention for every trial."""
+    if not values:
+        return None
+    if not 0 <= fraction <= 1:
+        raise ValueError("percentile fraction must be between 0 and 1")
+    ordered = sorted(float(value) for value in values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * weight, 6)
+
+
+def summarize_steady(rows: list[dict], warmup_steps: int) -> dict:
+    """Summarize steady samples without the upper-median or p95 rounding bias."""
+    train = [row for row in rows if row.get("event") == "train"]
+    steady = train[warmup_steps:]
+    step_seconds = [float(row["step_seconds"]) for row in steady]
+    tokens_per_second = [float(row["tokens_per_second"]) for row in steady]
+    return {
+        "steady_steps": len(steady),
+        "steady_complete": bool(steady),
+        "steady_step_seconds": step_seconds,
+        "steady_tokens_per_second": tokens_per_second,
+        "median_step_seconds": statistics.median(step_seconds) if step_seconds else None,
+        "p95_step_seconds": _percentile(step_seconds, 0.95),
+        "stdev_step_seconds": statistics.stdev(step_seconds) if len(step_seconds) > 1 else 0.0 if step_seconds else None,
+        "median_tokens_per_second": statistics.median(tokens_per_second) if tokens_per_second else None,
+        "mean_tokens_per_second": statistics.mean(tokens_per_second) if tokens_per_second else None,
+    }
+
+
 def _run_trial(args: argparse.Namespace, preset: str) -> dict:
     order = mapping_order(preset, args.world_size)
     trial_dir = args.output / preset
@@ -91,19 +125,16 @@ def _run_trial(args: argparse.Namespace, preset: str) -> dict:
     status = json.loads(status_path.read_text()) if status_path.exists() else {"phase": "missing"}
     metrics_path = run_dir / "metrics.jsonl"
     metrics = [json.loads(line) for line in metrics_path.read_text().splitlines() if line.strip()] if metrics_path.exists() else []
-    train = [row for row in metrics if row.get("event") == "train"]
-    steady = train[args.warmup_steps:]
+    steady_summary = summarize_steady(metrics, args.warmup_steps)
     result = {
         "preset": preset,
         "cuda_visible_devices": order,
         "exit_code": process.returncode,
         "status": status,
         "elapsed_seconds": time.time() - started,
-        "steady_steps": len(steady),
-        "median_step_seconds": sorted(row["step_seconds"] for row in steady)[len(steady) // 2] if steady else None,
-        "median_tokens_per_second": sorted(row["tokens_per_second"] for row in steady)[len(steady) // 2] if steady else None,
         "command": command,
     }
+    result.update(steady_summary)
     (trial_dir / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 
