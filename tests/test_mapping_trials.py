@@ -30,6 +30,25 @@ def test_build_command_is_bounded_and_uses_mapping(tmp_path: Path):
     assert command[command.index("--smoke-steps") + 1] == "3"
     assert "--formal" not in command
     assert str(tmp_path / "run") in command
+    # Only the final checkpoint: a 9.2 GB rolling checkpoint per step dominated earlier smokes.
+    assert command[command.index("--rolling-every") + 1] == "4"
+
+
+def test_build_command_keeps_an_explicit_rolling_interval(tmp_path: Path):
+    command = build_command(
+        repo=tmp_path,
+        site_config=Path("site.local.json"),
+        config=Path("configs/baseline/dense_full.json"),
+        output=tmp_path / "run",
+        world_size=8,
+        micro_batch=1,
+        smoke_steps=3,
+        smoke_accumulation=64,
+        rolling_every=1,
+    )
+
+    assert command[command.index("--rolling-every") + 1] == "1"
+    assert command[command.index("--smoke-accumulation") + 1] == "64"
 
 
 def test_summarize_steady_uses_interpolated_percentiles_and_true_median():

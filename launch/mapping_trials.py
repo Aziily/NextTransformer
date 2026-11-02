@@ -34,7 +34,9 @@ def mapping_order(preset: str, world_size: int) -> tuple[int, ...]:
 
 def build_command(*, repo: Path, site_config: Path, config: Path, output: Path,
                   world_size: int, micro_batch: int, smoke_steps: int,
-                  smoke_accumulation: int) -> list[str]:
+                  smoke_accumulation: int, rolling_every: int | None = None) -> list[str]:
+    # The final smoke step always checkpoints; a larger interval skips the per-step rolling ones.
+    rolling_every = rolling_every or smoke_steps + 1
     return [
         "python",
         "-m",
@@ -61,7 +63,7 @@ def build_command(*, repo: Path, site_config: Path, config: Path, output: Path,
         "--log-every",
         "1",
         "--rolling-every",
-        "1",
+        str(rolling_every),
         "--wandb-mode",
         "disabled",
     ]
@@ -114,6 +116,7 @@ def _run_trial(args: argparse.Namespace, preset: str) -> dict:
         micro_batch=args.micro_batch,
         smoke_steps=args.smoke_steps,
         smoke_accumulation=args.smoke_accumulation,
+        rolling_every=args.rolling_every,
     )
     environment = os.environ.copy()
     environment["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, order))
@@ -150,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--smoke-steps", type=int, default=3)
     parser.add_argument("--warmup-steps", type=int, default=1)
     parser.add_argument("--smoke-accumulation", type=int, default=1)
+    parser.add_argument("--rolling-every", type=int, help="rolling checkpoint interval (default: final step only)")
     parser.add_argument("--presets", nargs="+", choices=("islands", "interleaved"), default=("islands", "interleaved"))
     parser.add_argument("--env", nargs="*", default=[], help="extra KEY=VALUE environment entries")
     args = parser.parse_args(argv)
