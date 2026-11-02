@@ -153,11 +153,14 @@ def hardware_peak(device, observed_mhz=None, override_tflops=None):
                 basis=f"sm{arch[0]}{arch[1]}: {device['sms']} SMs × {per_clock} FLOP/clock × {clock:.0f} MHz ({source})")
 
 
-def phase_flops(proof, token_share):
+def phase_flops(proof, token_share, charged_total=None):
     """Audited FLOPs of one update split by phase; forward and backward scale with the update's share of the formal
-    tokens, the optimizer runs once per update. ``None`` unless the proof has a single training stage."""
-    stages = proof.get("stages") or []
-    if len(stages) != 1 or "cost" not in stages[0]:
+    tokens, the optimizer runs once per update. A proof with several training stages needs ``charged_total``, the
+    total the trainer charged for a formal update, to pick the stage that ran; otherwise ``None``."""
+    stages = [stage for stage in proof.get("stages") or [] if "cost" in stage]
+    if len(stages) > 1 and charged_total is not None:
+        stages = [min(stages, key=lambda stage: abs(stage["cost"]["total"] - charged_total))]
+    if len(stages) != 1:
         return None
     cost = stages[0]["cost"]
     phases = cost["phases"]

@@ -1,61 +1,653 @@
-"""Render a self-contained human-readable HTML report from profiler JSON."""
+"""Render profiler JSON as self-contained HTML: one page per profile and an index that compares profiles.
+
+Pages need no network, server or external asset. Charts are inline SVG and CSS drawn from the summary in two hues:
+blue for time spent on model FLOPs, orange for time lost beyond them. Light and dark themes follow the system and can
+be switched. Every chart has a table view, and hover readouts never hold the only copy of a value.
+
+    python -m launch.profile_report RUN/summary.json ... --output SITE_DIR
+"""
 
 from __future__ import annotations
 
+from collections import defaultdict
 import html
 import json
-from collections import defaultdict
+import math
 from pathlib import Path
 
 from launch.profile_analysis import lagging_gpus
 
 
-def _number(value: float, digits: int = 2) -> str:
-    return f"{value:,.{digits}f}"
+# Labels -----------------------------------------------------------------------------------------------------------
+
+PHASE_LABELS = {"startup": "Startup", "warmup": "Warmup", "steady": "Steady", "traced": "Traced",
+                "validation": "Validation", "core": "CORE", "checkpoint": "Checkpoint"}
+PHASE_TONES = {"steady": "use", "traced": "use-2", "warmup": "loss-2", "startup": "idle", "validation": "loss-3",
+               "core": "loss-3", "checkpoint": "loss"}
+STAGE_LABELS = {"step_setup": "Step setup", "data": "Data", "forward": "Forward", "backward": "Backward",
+                "grad_norm": "Gradient norm", "wait": "Host wait", "optimizer.reduce": "Optimizer reduce",
+                "optimizer.compute": "Optimizer compute", "optimizer.gather": "Optimizer gather",
+                "step_tail": "Step tail", "unattributed": "Unattributed"}
+WATERFALL_PARTS = {"ideal": "Model FLOPs at peak", "gemm below peak": "GEMM below peak",
+                   "attention below peak": "Attention below peak", "matrix kernels below peak": "Matrix kernels below peak",
+                   "other compute kernels": "Other compute kernels", "exposed communication": "Exposed communication",
+                   "exposed memory copies": "Exposed memory copies", "idle": "GPU idle"}
+WATERFALL_NOTES = {
+    "ideal": "the audited FLOPs of the update at the dense peak",
+    "gemm below peak": "matrix multiplies run slower than peak",
+    "attention below peak": "attention kernels run slower than peak",
+    "matrix kernels below peak": "matrix multiplies and attention run slower than peak",
+    "other compute kernels": "elementwise, normalization, casts, copies and the optimizer",
+    "exposed communication": "collectives with no compute kernel alongside",
+    "exposed memory copies": "copies and sets with no other kernel alongside",
+    "idle": "no kernel runs: the host is late or the GPU waits on a dependency",
+}
+# Tones: "use" is time on model FLOPs, "loss" time beyond them, "idle" nothing running.
+WATERFALL_TONES = {"ideal": "use", "gemm below peak": "loss-2", "attention below peak": "loss-2",
+                   "matrix kernels below peak": "loss-2", "other compute kernels": "loss",
+                   "exposed communication": "loss-3", "exposed memory copies": "loss-3", "idle": "idle"}
 
 
-def _memory_gib(value: int | float) -> str:
-    return f"{value / (1024 ** 3):,.2f} GiB"
+# Formatting -------------------------------------------------------------------------------------------------------
+
+def _text(value) -> str:
+    return html.escape(str(value))
 
 
-def _lagging(rows: list[dict]) -> set[int]:
+def _seconds(value) -> str:
+    if value is None:
+        return "—"
+    if abs(value) >= 100:
+        return f"{value:,.0f} s"
+    if abs(value) >= 1:
+        return f"{value:,.2f} s"
+    if abs(value) >= 1e-3:
+        return f"{value * 1e3:,.1f} ms"
+    return f"{value * 1e6:,.0f} µs"
+
+
+def _percent(value, digits=1) -> str:
+    return "—" if value is None else f"{100 * value:.{digits}f}%"
+
+
+def _tflops(value) -> str:
+    return "—" if not value else f"{value / 1e12:,.1f} TFLOP/s"
+
+
+def _gib(value) -> str:
+    return "—" if value is None else f"{value / 2**30:,.2f} GiB"
+
+
+def _amount(value, unit, suffix, digits=1, empty="—") -> str:
+    return empty if not value else f"{value / unit:,.{digits}f} {suffix}".rstrip()
+
+
+def _compact(value) -> str:
+    for unit, suffix in ((1e9, "G"), (1e6, "M"), (1e3, "k")):
+        if abs(value) >= unit:
+            return f"{value / unit:,.1f}{suffix}"
+    return f"{value:,.0f}"
+
+
+def _stage(name) -> str:
+    return STAGE_LABELS.get(name, name)
+
+
+def _tip(*parts) -> str:
+    """A hover readout: value first, then its label."""
+    return _text(" · ".join(str(part) for part in parts if part not in (None, "")))
+
+
+# Chart primitives -------------------------------------------------------------------------------------------------
+
+def _segments(parts, size="md", label_min=0.07):
+    """A full-width stacked bar of ``(key, label, seconds, tone)`` parts with a 2px surface gap between segments."""
+    total = sum(max(seconds, 0) for _, _, seconds, _ in parts) or 1.0
+    items = []
+    for key, label, seconds, tone in parts:
+        share = max(seconds, 0) / total
+        if share <= 0:
+            continue
+        inner = f'<span class="seg-label">{_text(_percent(share, 0))}</span>' if share >= label_min else ""
+        items.append(f'<span class="seg tone-{tone}" data-part="{_text(key)}" style="flex-grow:{share:.5f}" tabindex="0" '
+                     f'title="{_tip(_seconds(seconds), _percent(share), label)}">{inner}</span>')
+    return f'<div class="stack stack-{size}" role="img" aria-label="Stacked bar">{"".join(items)}</div>'
+
+
+def _legend(items):
+    return '<ul class="legend">' + "".join(
+        f'<li><span class="key tone-{tone}"></span>{_text(label)}</li>' for label, tone in items) + "</ul>"
+
+
+def _bars(rows, value_format, max_value=None, tone_of=None, note_of=None, bar_label=""):
+    """Horizontal bars of ``(label, value)``; labels and values in text ink, bars in their tone."""
+    if not rows:
+        return ""
+    top = max_value or max(value for _, value in rows) or 1.0
+    items = []
+    for index, (label, value) in enumerate(rows):
+        tone = tone_of(index, label) if tone_of else "use"
+        note = note_of(index, label) if note_of else ""
+        width = max(0.0, min(1.0, value / top)) * 100
+        items.append(
+            f'<div class="bar-row" tabindex="0" title="{_tip(value_format(value), label, note)}">'
+            f'<span class="bar-label">{_text(label)}</span>'
+            f'<span class="bar-track"><span class="bar tone-{tone}" style="width:{width:.3f}%"></span></span>'
+            f'<span class="bar-value">{_text(value_format(value))}</span>'
+            f'<span class="bar-note">{_text(note)}</span></div>')
+    return f'<div class="bars" aria-label="{_text(bar_label)}">{"".join(items)}</div>'
+
+
+def _split_bar_row(label, parts, top, value, note=""):
+    """One bar made of ``(seconds, tone, name)`` parts, e.g. exposed and hidden communication."""
+    spans = "".join(f'<span class="bar tone-{tone}" style="width:{100 * max(seconds, 0) / top:.3f}%"></span>'
+                    for seconds, tone, _ in parts)
+    detail = ", ".join(f"{_gib(seconds) if 'GiB' in value else _seconds(seconds)} {name}" for seconds, _, name in parts if seconds)
+    return (f'<div class="bar-row" tabindex="0" title="{_tip(value, label, detail)}"><span class="bar-label">{_text(label)}</span>'
+            f'<span class="bar-track">{spans}</span><span class="bar-value">{_text(value)}</span>'
+            f'<span class="bar-note">{_text(note)}</span></div>')
+
+
+def _meter(value, label, caption):
+    """A half-ring gauge of a ratio between 0 and 1."""
+    ratio = max(0.0, min(1.0, value or 0.0))
+    radius, cx, cy = 80, 100, 96
+
+    def point(fraction):
+        angle = math.pi * (1 - fraction)
+        return cx + radius * math.cos(angle), cy - radius * math.sin(angle)
+
+    x0, y0 = point(0)
+    x1, y1 = point(1)
+    xv, yv = point(ratio)
+    track = f"M {x0:.1f} {y0:.1f} A {radius} {radius} 0 0 1 {x1:.1f} {y1:.1f}"
+    fill = f"M {x0:.1f} {y0:.1f} A {radius} {radius} 0 0 1 {xv:.1f} {yv:.1f}" if ratio > 0 else ""
+    return (f'<figure class="meter"><svg viewBox="0 0 200 108" role="img" aria-label="{_text(label)} {_percent(value)}">'
+            f'<path class="meter-track" d="{track}"/><path class="meter-fill" d="{fill}"/>'
+            f'<text class="meter-value" x="100" y="90">{_text(_percent(value))}</text></svg>'
+            f'<figcaption><b>{_text(label)}</b><span>{_text(caption)}</span></figcaption></figure>')
+
+
+def _table(headers, rows, numeric=()):
+    head = "".join(f'<th{" class=num" if index in numeric else ""}>{_text(header)}</th>' for index, header in enumerate(headers))
+    body = "".join("<tr>" + "".join(f'<td{" class=num" if index in numeric else ""}>{cell}</td>' for index, cell in enumerate(row))
+                   + "</tr>" for row in rows)
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _table_view(headers, rows, numeric=(), title="Table view", identifier=None):
+    attribute = f' id="{identifier}"' if identifier else ""
+    return (f'<details class="table-view"{attribute}><summary>{_text(title)}</summary>'
+            f'<div class="table-scroll">{_table(headers, rows, numeric)}</div></details>')
+
+
+def _tiles(items, small=False):
+    return f'<div class="tiles{" small" if small else ""}">' + "".join(
+        f'<div class="tile"><span class="tile-label">{_text(label)}</span><span class="tile-value">{_text(value)}</span>'
+        f'<span class="tile-note">{_text(note)}</span></div>' for label, value, note in items) + "</div>"
+
+
+def _section(identifier, title, lede, body, extra_class=""):
+    return (f'<section id="{identifier}" class="panel {extra_class}"><header><h2>{_text(title)}</h2>'
+            + (f'<p class="lede">{lede}</p>' if lede else "") + f"</header>{body}</section>")
+
+
+# Page head --------------------------------------------------------------------------------------------------------
+
+def _title(summary):
+    run = summary.get("run") or {}
+    return run.get("method") or (Path(run["config"]).stem if run.get("config") else "Training profile")
+
+
+def _headline(summary):
+    steady = (summary.get("metrics_summary") or {}).get("steady") or {}
+    mfu = summary.get("mfu_summary") or {}
+    losses = [row for row in mfu.get("waterfall", []) if row["part"] != "ideal"]
+    step = steady.get("median_step_seconds")
+    if not step:
+        return "The trainer did not reach a steady update, so this profile has no timing summary."
+    sentence = f"An update takes {_seconds(step)}"
+    if mfu.get("mfu") is not None:
+        sentence += f" at {_percent(mfu['mfu'], 0)} MFU"
+    if losses:
+        worst = max(losses, key=lambda row: row["seconds"])
+        sentence += f"; the largest loss is {WATERFALL_PARTS.get(worst['part'], worst['part']).lower()} ({_seconds(worst['seconds'])})"
+    return sentence + "."
+
+
+def _identity(summary):
+    run = summary.get("run") or {}
+    shape = summary.get("shape") or {}
+    device = (summary.get("hardware") or {}).get("device") or {}
+    software = summary.get("software") or {}
+    facts = []
+    if run.get("config"):
+        facts.append(("Configuration", Path(run["config"]).name))
+    if shape:
+        facts.append(("Update", f'{shape["world"]} ranks × micro-batch {shape["micro_batch"]} × {shape["accumulation"]} '
+                                f'= {shape["tokens_per_update"]:,} tokens per update'))
+    if device.get("name"):
+        facts.append(("GPU", f'{device["name"]}, sm{device.get("major")}{device.get("minor")}'))
+    if software:
+        facts.append(("Software", ", ".join(f"{key.replace('_', ' ')} {value}" for key, value in software.items())))
+    facts.append(("Status", str(summary.get("status", "unknown"))))
+    return '<dl class="facts">' + "".join(f"<div><dt>{_text(label)}</dt><dd>{_text(value)}</dd></div>" for label, value in facts) + "</dl>"
+
+
+def _detail(rows) -> str:
+    if not rows:
+        return ""
+    return " (" + ", ".join(f'{_text(row["category"])} {_seconds(row["seconds"])}' for row in rows[:5]) + ")"
+
+
+def _overview(summary):
+    """Stat row and the hero bar: the traced update split into time on model FLOPs and each loss."""
+    mfu = summary.get("mfu_summary") or {}
+    waterfall = mfu.get("waterfall") or []
+    steady = (summary.get("metrics_summary") or {}).get("steady") or {}
+    shape = summary.get("shape") or {}
+    flops = shape.get("model_flops_per_gpu_s")
+    memory = (summary.get("memory_summary") or {}).get("reserved_peak") or steady.get("peak_memory_bytes")
+    tiles = _tiles([("Update", _seconds(steady.get("median_step_seconds")), "median of steady updates"),
+                    ("Throughput", f'{_compact(steady.get("median_tokens_per_second") or 0)} tok/s', "all ranks"),
+                    ("MFU", _percent(mfu.get("mfu")), f'{flops / 1e12:,.1f} model TFLOP/s per GPU' if flops else "peak unknown"),
+                    ("Peak memory", _gib(memory), "reserved, largest rank")])
+    if not waterfall:
+        return f'<div class="overview">{tiles}</div>'
+    parts = [(row["part"], WATERFALL_PARTS.get(row["part"], row["part"]), max(row["seconds"], 0),
+              WATERFALL_TONES.get(row["part"], "loss")) for row in waterfall]
+    rows = [[f'<span class="key tone-{WATERFALL_TONES.get(row["part"], "loss")}"></span>{_text(WATERFALL_PARTS.get(row["part"], row["part"]))}',
+             _seconds(max(row["seconds"], 0)), _percent(row["share"]),
+             _text(WATERFALL_NOTES.get(row["part"], "")) + _detail(row.get("detail"))] for row in waterfall]
+    return (f'<div class="overview" id="mfu-loss">{tiles}<figure class="hero-bar"><figcaption>Where the traced update goes '
+            f'({_seconds(mfu.get("traced_window_s"))} on rank 0): model FLOPs at peak, then everything lost beyond them'
+            f'</figcaption>{_segments(parts, size="lg")}{_legend([(label, tone) for _, label, _, tone in parts])}</figure>'
+            f'<div class="table-scroll">{_table(["Part", "Time", "Share", "What it is"], rows, numeric=(1, 2))}</div></div>')
+
+
+# Sections ---------------------------------------------------------------------------------------------------------
+
+def _findings(summary):
+    findings = summary.get("findings") or []
+    if not findings:
+        return ""
+    items = "".join(
+        f'<li class="finding {_text(finding["severity"])}" data-finding="{_text(finding["id"])}">'
+        f'<span class="badge">{"Warning" if finding["severity"] == "warning" else "Note"}</span>'
+        f'<div><b>{_text(finding["title"])}</b><p>{_text(finding["detail"])}</p></div></li>' for finding in findings)
+    return _section("findings", "What to look at first", "Ordered by severity; each finding names the evidence it comes from.",
+                    f'<ol class="findings">{items}</ol>')
+
+
+def _phase_name(row):
+    return _stage(row["phase"]) if row["phase"] in STAGE_LABELS else row["phase"].capitalize()
+
+
+def _mfu(summary):
+    mfu = summary.get("mfu_summary")
+    if not mfu:
+        return ""
+    hardware = summary.get("hardware") or {}
+    meters = [_meter(mfu.get("mfu"), "MFU", f'{_tflops(mfu["achieved_flops"])} per GPU of {_tflops(mfu.get("peak_flops"))} dense BF16')]
+    if mfu.get("clock_mfu") is not None:
+        meters.append(_meter(mfu["clock_mfu"], "MFU at the measured clock",
+                             f'peak {_tflops(mfu.get("clock_peak_flops"))} at the mean SM clock of steady updates'))
+    phases = [row for row in mfu["phases"] if row["mfu"] is not None]
+    phase_bars = _bars([(_phase_name(row), row["mfu"]) for row in phases], _percent, max_value=1.0,
+                       note_of=lambda index, label: f'{_seconds(phases[index]["seconds"])}, {_tflops(phases[index]["achieved_flops"])}',
+                       bar_label="MFU by phase")
+    kernels = [row for row in mfu.get("kernels", []) if row.get("efficiency") is not None]
+    kernel_bars = _bars([("GEMM kernels" if row["kind"] == "gemm" else "Attention kernels", row["efficiency"]) for row in kernels],
+                        _percent, max_value=1.0,
+                        note_of=lambda index, label: f'{_seconds(kernels[index]["seconds"])} at {kernels[index]["tflops"]:,.1f} TFLOP/s',
+                        bar_label="Matrix kernels against peak") if kernels else ""
+    phase_rows = [[_text(_phase_name(row)), _seconds(row["seconds"]), _amount(row["flops"], 1e12, "TFLOP"),
+                   _tflops(row["achieved_flops"]), _percent(row["mfu"])] for row in mfu["phases"]]
+    kernel_rows = [[("GEMM" if row["kind"] == "gemm" else "Attention") + " kernels", _seconds(row["seconds"]),
+                    _amount(row["flops"], 1e12, "TFLOP"), _amount(row["tflops"], 1, "TFLOP/s"), _percent(row["efficiency"]),
+                    _text(row.get("flops_source", ""))] for row in mfu.get("kernels", [])]
+    body = (f'<div class="meters">{"".join(meters)}</div><div class="split"><div><h3>MFU by phase</h3>{phase_bars}</div>'
+            + (f'<div><h3>Matrix kernels against peak</h3>{kernel_bars}</div>' if kernel_bars else "") + "</div>"
+            + _table_view(["Phase", "Time", "FLOPs per GPU", "Rate", "MFU"], phase_rows, numeric=(1, 2, 3, 4))
+            + (_table_view(["Kernels", "Time", "FLOPs", "Rate", "Of peak", "FLOPs from"], kernel_rows, numeric=(1, 2, 3, 4),
+                           title="Matrix kernels") if kernel_rows else ""))
+    lede = (f'Audited model FLOPs of an update, the cost the trainer charges, over the dense BF16 tensor peak '
+            f'({_text(hardware.get("basis", "unknown"))}). GEMM FLOPs come from traced shapes, attention FLOPs from the audit.')
+    return _section("mfu", "Model FLOPs utilization", lede, body)
+
+
+def _projection(summary):
+    projection = summary.get("projection")
+    if not projection or not projection.get("representative") or "estimated_hours" not in projection:
+        return ""
+    parts = [("training", "Training updates", projection["training_hours"], "use")]
+    if "validation_hours" in projection:
+        parts.append(("validation", "Validation", projection["validation_hours"], "use-2"))
+    if "checkpoint_hours" in projection:
+        parts.append(("checkpoint", "Checkpoints", projection["checkpoint_hours"], "loss-3"))
+    total = projection["estimated_hours"]
+    missing = "CORE-22 evaluation is not measured and comes on top."
+    if "validation_hours" not in projection and "validation_events" in projection:
+        missing = (f'Validation ({projection["validation_events"]} events) and CORE-22 are not included: this profile '
+                   f'validated {projection.get("validation_measured_tokens", 0):,} tokens. Rerun with '
+                   f'<code>--validation-tokens 41943040</code> to measure validation.')
+    rows = [[_text(label), f"{hours:,.1f} h"] for _, label, hours, _ in parts]
+    body = (f'<p class="big-number">{total:,.1f} h<span>≈ {total / 24:,.1f} days for {projection["updates"]:,} updates</span></p>'
+            f'{_segments(parts, size="sm", label_min=0.2)}{_legend([(label, tone) for _, label, _, tone in parts])}'
+            f'<p class="lede">{missing}</p>{_table_view(["Part", "Time"], rows, numeric=(1,))}')
+    return _section("projection", "Formal run estimate", "From the median steady update on this machine.", body)
+
+
+def _stage_tone(stage):
+    if stage in ("forward", "backward"):
+        return "use"
+    if stage.startswith("optimizer") or stage == "grad_norm":
+        return "use-2"
+    return "idle"
+
+
+def _stages(summary):
+    stages = summary.get("stage_summary") or {}
+    rows = stages.get("stages") or []
+    if not rows:
+        return _section("stages", "Where an update spends its time",
+                        "Stage timings are unavailable: the trainer exited early or the profile predates the stage timer.", "")
+    shown = [row for row in rows if row["seconds"] >= 1e-3]
+    bars = _bars([(_stage(row["stage"]), row["seconds"]) for row in shown], _seconds,
+                 tone_of=lambda index, label: _stage_tone(shown[index]["stage"]),
+                 note_of=lambda index, label: f'{_percent(shown[index]["share"])} of the update',
+                 bar_label="Stage time per update")
+    ranks = sorted({rank for row in rows for rank, _ in row.get("per_rank", [])})
+    grid = ""
+    if len(ranks) > 1:
+        lines = []
+        for row in shown:
+            values = dict(row.get("per_rank", []))
+            low, spread = row["rank_min"], row["rank_max"] - row["rank_min"]
+            cells = "".join(
+                f'<span class="cell" style="--v:{(values.get(rank, low) - low) / spread if spread else 0:.3f}" '
+                f'title="{_tip(_seconds(values.get(rank)), _stage(row["stage"]), f"rank {rank}")}"></span>' for rank in ranks)
+            lines.append(f'<div class="grid-row"><span class="grid-label">{_text(_stage(row["stage"]))}</span>'
+                         f'<span class="grid-cells" style="--n:{len(ranks)}">{cells}</span>'
+                         f'<span class="grid-note">{_seconds(spread)}</span></div>')
+        head = "".join(f"<span>{rank}</span>" for rank in ranks)
+        grid = (f'<h3>Rank spread</h3><p class="lede">Within each stage, darker cells are slower ranks; the right column is '
+                f'the spread from fastest to slowest. Every rank waits for the slowest at the next collective.</p>'
+                f'<div class="rank-grid"><div class="grid-row head"><span class="grid-label">Rank</span>'
+                f'<span class="grid-cells" style="--n:{len(ranks)}">{head}</span><span class="grid-note">Spread</span></div>'
+                f'{"".join(lines)}</div>')
+    table = [[_text(_stage(row["stage"])), _seconds(row["seconds"]), _percent(row["share"]), _seconds(row["host_seconds"]),
+              _seconds(row["rank_min"]), _seconds(row["rank_max"]), str(row["slowest_rank"])] for row in rows]
+    timing = "CUDA events on each rank's stream" if stages.get("timing") == "cuda_events" else "host clocks"
+    lede = (f'Mean of steady updates {", ".join(map(str, stages["steady_steps"]))} over all ranks, timed with {timing}: '
+            f'{_seconds(stages["step_seconds"])} per update. A stage runs from the trainer entering it to entering the next.')
+    return _section("stages", "Where an update spends its time", lede,
+                    bars + grid + _table_view(["Stage", "Time", "Share", "Host", "Fastest rank", "Slowest rank", "Slowest"],
+                                              table, numeric=(1, 2, 3, 4, 5)))
+
+
+def _timeline(trace):
+    windows = (trace or {}).get("timeline") or []
+    if not windows:
+        return ""
+    blocks = []
+    for index, window in enumerate(windows):
+        buckets = window["buckets"] or 1
+        width, plot = 1000 / buckets, 60
+        mix = window.get("mix") or []
+        areas = ""
+        if mix:
+            matrix = " ".join(f"L {(i + 0.5) * width:.1f} {plot - plot * value[0]:.1f}" for i, value in enumerate(mix))
+            both = " ".join(f"L {(i + 0.5) * width:.1f} {plot - plot * min(1, value[0] + value[1]):.1f}" for i, value in enumerate(mix))
+            areas = (f'<path class="area tone-loss" d="M 0 {plot} {both} L 1000 {plot} Z"/>'
+                     f'<path class="area tone-use" d="M 0 {plot} {matrix} L 1000 {plot} Z"/>')
+        lanes = []
+        for lane, top, height in (("stage", 70, 12), ("communication", 90, 9), ("memory", 105, 9)):
+            for first, last, label, intensity in window["lanes"].get(lane, []):
+                tone = _stage_tone(str(label)) if lane == "stage" else "loss" if lane == "communication" else "loss-3"
+                lanes.append(f'<rect class="tone-{tone}" x="{first * width:.1f}" y="{top}" width="{max((last - first) * width - 1, 0.6):.1f}" '
+                             f'height="{height}" rx="2" opacity="{0.45 + 0.55 * intensity:.2f}" data-lane="{lane}" data-label="{_text(label)}">'
+                             f'<title>{_tip(_stage(label), lane)}</title></rect>')
+        ticks = "".join(f'<text class="tick" x="{fraction * 1000:.0f}" y="132" text-anchor="{anchor}">'
+                        f'{_text(_seconds(window["start_s"] + fraction * window["seconds"]))}</text>'
+                        for fraction, anchor in ((0, "start"), (0.25, "middle"), (0.5, "middle"), (0.75, "middle"), (1, "end")))
+        names = "".join(f'<text class="lane-name" x="-10" y="{y}" text-anchor="end">{name}</text>'
+                        for name, y in (("Busy", 34), ("Stage", 80), ("Comm", 98), ("Memory", 113)))
+        svg = (f'<svg class="timeline" viewBox="-72 -4 1078 142" role="img" aria-label="{_text(window["name"])} timeline">'
+               f'<line class="grid" x1="0" x2="1000" y1="{plot}" y2="{plot}"/><line class="grid" x1="0" x2="1000" y1="0" y2="0"/>'
+               f'{areas}{"".join(lanes)}{names}{ticks}<line class="crosshair" x1="0" x2="0" y1="-4" y2="118"/></svg>')
+        blocks.append(f'<details class="window"{" open" if index == 0 else ""} data-start="{window["start_s"]}" '
+                      f'data-seconds="{window["seconds"]}"><summary>{_text(window["name"].capitalize())}'
+                      f'<span>{_seconds(window["seconds"])} starting at {_seconds(window["start_s"])}</span></summary>'
+                      f'{svg}<p class="readout" aria-live="polite"></p></details>')
+    legend = _legend([("Matrix kernels busy", "use"), ("Other kernels busy", "loss"), ("Forward and backward", "use"),
+                      ("Optimizer", "use-2"), ("Communication", "loss"), ("Memory copies", "loss-3")])
+    return _section("timeline", "Timeline",
+                    "Rank 0's traced update, its middle micro-batch, and the tail from the last backward through the optimizer. "
+                    "The upper band is how busy each slice is with matrix kernels (blue) and other kernels (orange); point at it "
+                    "for the time.", "".join(blocks) + legend)
+
+
+def _activity(trace):
+    rows = (trace or {}).get("per_gpu") or []
+    if not rows:
+        return ""
+    lines = []
+    for row in rows:
+        parts = [("compute", "Compute only", row["compute_s"] - row["overlap_s"], "use"),
+                 ("overlap", "Compute with communication", row["overlap_s"], "use-2"),
+                 ("communication", "Exposed communication", row["exposed_communication_s"], "loss"),
+                 ("memory", "Exposed memory copies", row.get("exposed_memory_s", row["memory_s"]), "loss-3"),
+                 ("idle", "Idle", row["idle_s"], "idle")]
+        lines.append(f'<div class="gpu-row"><span class="grid-label">GPU {row["gpu"]}</span>{_segments(parts, size="sm", label_min=0.08)}</div>')
+    table = [[f'GPU {row["gpu"]}', _seconds(row["window_s"]), _seconds(row["compute_s"]), _seconds(row["overlap_s"]),
+              _seconds(row["exposed_communication_s"]), _seconds(row["idle_s"])] for row in rows]
+    legend = _legend([("Compute only", "use"), ("Compute with communication", "use-2"), ("Exposed communication", "loss"),
+                      ("Exposed memory copies", "loss-3"), ("Idle", "idle")])
+    return _section("gpu-activity", "What the GPUs were doing",
+                    "Each traced GPU's update by what its kernels did. Exposed communication has no compute kernel alongside.",
+                    "".join(lines) + legend + _table_view(["GPU", "Window", "Compute", "Overlap", "Exposed communication", "Idle"],
+                                                          table, numeric=(1, 2, 3, 4, 5)))
+
+
+def _communication(trace):
+    rows = (trace or {}).get("communication") or []
+    if not rows:
+        return ""
+    top = max(row["seconds"] for row in rows) or 1.0
+    bars = "".join(_split_bar_row(f'{row["collective"]} {row["dtype"]} in {_stage(row["stage"])}',
+                                  [(row["exposed_s"], "loss", "exposed"), (max(row["seconds"] - row["exposed_s"], 0), "use-2", "hidden")],
+                                  top, _seconds(row["seconds"]), _amount(row["busbw_gbps"], 1, "GB/s bus")) for row in rows)
+    table = [[_text(row["collective"]), _text(row["dtype"]), _text(_stage(row["stage"])), f'{row["calls"]:,.0f}',
+              _amount(row["bytes"], 1e9, "GB", 2), _seconds(row["seconds"]), _seconds(row["exposed_s"]),
+              _amount(row["algbw_gbps"], 1, "GB/s"), _amount(row["busbw_gbps"], 1, "GB/s"),
+              f'<span class="mono">{_text(row["kernel"])}</span>'] for row in rows]
+    return _section("communication", "Communication",
+                    "Collectives per traced update and rank. Exposed time (orange) has no compute alongside it; hidden time "
+                    "(light blue) overlaps compute. Bus bandwidth follows nccl-tests.",
+                    f'<div class="bars">{bars}</div>' + _legend([("Exposed", "loss"), ("Hidden behind compute", "use-2")])
+                    + _table_view(["Collective", "Type", "Stage", "Calls", "Bytes", "Time", "Exposed", "Algorithm bandwidth",
+                                   "Bus bandwidth", "Kernel"], table, numeric=(3, 4, 5, 6, 7, 8)))
+
+
+def _scheduling(trace):
+    launch, idle, syncs = (trace or {}).get("launch"), (trace or {}).get("idle"), (trace or {}).get("syncs") or []
+    if not launch:
+        return ""
+    per_micro = launch.get("per_micro_batch")
+    tiles = [("Kernels per update", f'{launch["kernels"]:,.0f}', f'{per_micro:,.0f} kernels per micro-batch' if per_micro else ""),
+             ("Host launch time", _seconds(launch["host_s"]), f'{launch["api_calls"]:,.0f} launch calls'),
+             ("Memory operations", f'{launch["memory_ops"]:,.0f}', "copies and sets")]
+    if idle:
+        tiles.append(("GPU idle", _seconds(idle["total_s"]), f'{idle["gaps"]:,.0f} gaps between kernels'))
+    body = _tiles(tiles, small=True)
+    if idle and idle["total_s"]:
+        parts = [("host", "Host late", idle["host_s"], "loss"), ("launch", "Launch latency", idle["launch_s"], "loss-2"),
+                 ("dependency", "Waiting on a dependency", idle["dependency_s"], "idle")]
+        largest = "".join(f'<li>{_seconds(row["seconds"])} at {row["start_s"]:.3f} s, {_text(row["cause"])}, before '
+                          f'<span class="mono">{_text(row["next"])}</span> in {_text(_stage(row["stage"]))}</li>'
+                          for row in idle.get("largest", [])[:6])
+        body += (f'<h3>Why GPUs idle</h3>{_segments(parts, size="sm", label_min=0.15)}'
+                 f'{_legend([(label, tone) for _, label, _, tone in parts])}'
+                 f'<details class="table-view"><summary>Largest gaps</summary><ul class="plain">{largest}</ul></details>')
+    if syncs:
+        rows = [[f'<span class="mono">{_text(row["api"])}</span>', f'<span class="mono">{_text(row["source"])}</span>',
+                 _text(_stage(row["stage"])), f'{row["calls"]:,.0f}', _seconds(row["seconds"])] for row in syncs[:10]]
+        body += ('<h3>Host synchronizations</h3><p class="lede">Calls that block the host until the GPU catches up; while it '
+                 'waits it cannot queue the next kernels.</p><div class="table-scroll">'
+                 + _table(["API", "From", "Stage", "Calls", "Host blocked"], rows, numeric=(3, 4)) + "</div>")
+    return _section("scheduling", "Scheduling and synchronization", "Per traced update and rank.", body)
+
+
+def _components(trace):
+    rows = (trace or {}).get("components") or []
+    if not rows:
+        return ""
+    top = max(row["forward_s"] + row["backward_s"] for row in rows) or 1.0
+    bars = "".join(_split_bar_row(row["name"], [(row["forward_s"], "use", "forward"), (row["backward_s"], "use-2", "backward")],
+                                  top, _seconds(row["forward_s"] + row["backward_s"]),
+                                  _amount(row["flops"], 1e12, "TFLOP matrix", empty="")) for row in rows)
+    layered = [row for row in rows if len(row["layers"]) > 1]
+    heat = ""
+    if layered:
+        layers = sorted({layer["layer"] for row in layered for layer in row["layers"]})
+        high = max(layer["forward_s"] + layer["backward_s"] for row in layered for layer in row["layers"]) or 1.0
+        lines = []
+        for row in layered:
+            by_layer = {layer["layer"]: layer for layer in row["layers"]}
+            cells = "".join(
+                f'<span class="cell" style="--v:{(by_layer[layer]["forward_s"] + by_layer[layer]["backward_s"]) / high:.3f}" '
+                f'title="{_tip(_seconds(by_layer[layer]["forward_s"] + by_layer[layer]["backward_s"]), row["name"], f"layer {layer}")}"></span>'
+                if layer in by_layer else '<span class="cell empty"></span>' for layer in layers)
+            lines.append(f'<div class="grid-row"><span class="grid-label">{_text(row["name"])}</span>'
+                         f'<span class="grid-cells" style="--n:{len(layers)}">{cells}</span><span></span></div>')
+        head = "".join(f"<span>{layer if layer % 4 == 0 else ''}</span>" for layer in layers)
+        heat = (f'<h3>By layer</h3><p class="lede">Forward plus backward GPU time of each layer; darker is slower, an empty '
+                f'cell means the component is not in that layer.</p><div class="rank-grid layers"><div class="grid-row head">'
+                f'<span class="grid-label">Layer</span><span class="grid-cells" style="--n:{len(layers)}">{head}</span><span></span></div>'
+                f'{"".join(lines)}</div>')
+    table = [[_text(row["name"]), _seconds(row["forward_s"]), _seconds(row["backward_s"]),
+              _amount(row["flops"], 1e12, "TFLOP")] for row in rows]
+    layer_rows = [[_text(row["name"]), f'layer {layer["layer"]}', _seconds(layer["forward_s"]), _seconds(layer["backward_s"])]
+                  for row in rows for layer in row["layers"]]
+    return _section("components", "Model components",
+                    "GPU compute time per traced update in each part of the model: forward (blue) and backward (light blue). "
+                    "Backward kernels belong to the module whose forward created them.",
+                    f'<div class="bars">{bars}</div>' + _legend([("Forward", "use"), ("Backward", "use-2")]) + heat
+                    + _table_view(["Component", "Forward", "Backward", "Matrix FLOPs"], table, numeric=(1, 2, 3))
+                    + (_table_view(["Component", "Layer", "Forward", "Backward"], layer_rows, numeric=(2, 3), title="Per layer")
+                       if layer_rows else ""))
+
+
+def _tree_rows(nodes, total, depth):
+    items = []
+    for node in nodes:
+        label = _stage(node["name"]) if depth == 0 else node["name"]
+        share = node["seconds"] / total if total else 0.0
+        line = (f'<span class="name" title="{_text(label)}">{_text(label)}</span>'
+                f'<span class="bar-track"><span class="bar tone-use" style="width:{100 * share:.3f}%"></span></span>'
+                f'<span class="num">{_seconds(node["seconds"])}</span><span class="num">{_percent(share)}</span>'
+                f'<span class="num muted">{node["count"]:,.0f}</span>')
+        if node["children"]:
+            items.append(f'<details data-depth="{depth}"><summary>{line}</summary>{_tree_rows(node["children"], total, depth + 1)}</details>')
+        else:
+            items.append(f'<div class="leaf" data-depth="{depth}">{line}</div>')
+    return "".join(items)
+
+
+def _category_tone(index, label):
+    if label in ("gemm", "attention"):
+        return "use"
+    return "loss-3" if label in ("communication", "memory") else "loss"
+
+
+def _kernels(summary):
+    trace = summary.get("trace_summary")
+    if not trace:
+        return _section("kernel-tree", "Operators and kernels",
+                        "No trace in this profile. Rerun with <code>--trace torch</code> for a stage, category, operator and "
+                        "kernel breakdown of rank 0, or <code>--trace nsys</code> for the kernels of every rank.", "")
+    total = sum(node["seconds"] for node in trace["tree"])
+    categories = sorted(((name, seconds) for name, seconds in (trace.get("categories") or {}).items() if seconds > 0),
+                        key=lambda item: item[1], reverse=True)
+    category_bars = _bars(categories, _seconds, tone_of=_category_tone, bar_label="GPU time by kernel category") if categories else ""
+    gemm = trace.get("gemm") or []
+    rated = [row for row in gemm if row.get("tflops")][:8]
+    shape_bars = _bars([(f'{_stage(row["stage"])}: {row["shape"]}', row["tflops"]) for row in rated],
+                       lambda value: f"{value:,.0f} TFLOP/s", bar_label="Rate of the slowest-costing matrix shapes",
+                       note_of=lambda index, label: _seconds(rated[index]["seconds"])) if rated else ""
+    small = trace.get("small_kernels", {})
+    source = ("PyTorch profiler; operators are the CPU ops that launched each kernel" if trace["source"] == "torch"
+              else "Nsight Systems, every rank")
+    tree = (f'<h3>Drill down</h3><div class="tree"><div class="tree-head"><span>Stage, category, operator, kernel</span>'
+            f'<span></span><span class="num">Time</span><span class="num">Share</span><span class="num">Launches</span></div>'
+            f'{_tree_rows(trace["tree"], total, 0)}</div>')
+    top_rows = [[f'<span class="mono">{_text(row["name"])}</span>', _text(row["category"]), f'{row["count"]:,.0f}',
+                 _seconds(row["seconds"]), f'{row["mean_us"]:,.1f} µs'] for row in trace.get("top_kernels") or []]
+    gemm_rows = [[("GEMM" if row["kind"] == "gemm" else "Attention"), _text(_stage(row["stage"])),
+                  f'<span class="mono">{_text(row["op"])}</span>', f'<span class="mono">{_text(row["shape"])}</span>',
+                  f'{row["calls"]:,.0f}', _seconds(row["seconds"]), _amount(row["tflops"], 1, ""),
+                  f'<span class="mono">{_text(row["kernel"] or "")}</span>'] for row in gemm[:30]]
+    other_rows = [[_text(_stage(row["stage"])), f'<span class="mono">{_text(row["op"])}</span>', _text(row["category"]),
+                   f'{row["calls"]:,.0f}', _seconds(row["seconds"])] for row in trace.get("other_operators") or []]
+    body = (f'<div class="split"><div><h3>GPU time by kernel category</h3>{category_bars}</div>'
+            + (f'<div><h3>Matrix shapes by rate</h3>{shape_bars}</div>' if shape_bars else "") + f"</div>{tree}"
+            + (_table_view(["Kernel", "Category", "Launches", "Time", "Mean"], top_rows, numeric=(2, 3, 4), title="Top kernels",
+                           identifier="top-kernels") if top_rows else "")
+            + (_table_view(["Kind", "Stage", "Operator", "Shape", "Calls", "Time", "TFLOP/s", "Kernel"], gemm_rows,
+                           numeric=(4, 5, 6), title="Matrix shapes", identifier="matrix-shapes") if gemm_rows else "")
+            + (_table_view(["Stage", "Operator", "Kernels", "Launches", "Time"], other_rows, numeric=(3, 4),
+                           title="Non-matrix operators", identifier="other-operators") if other_rows else ""))
+    lede = (f'GPU time per traced update and rank ({source}; {trace["steps"]} update(s), {trace["ranks"]} rank(s)). '
+            f'{_percent(small.get("count_share", 0), 0)} of kernels run under 10 µs. Each kernel belongs to the stage that '
+            f'launched it, so an asynchronous collective appears where it was issued.')
+    return _section("kernel-tree", "Operators and kernels", lede, body)
+
+
+def _memory(summary):
+    memory = summary.get("memory_summary")
+    if not memory:
+        return ""
+    total = memory.get("total_bytes") or 1
+    bars = "".join(_split_bar_row(f'Rank {row["rank"]}', [(row["allocated_peak"], "use", "allocated"),
+                                                          (max(row["reserved_peak"] - row["allocated_peak"], 0), "use-2", "cache")],
+                                  total, _gib(row["reserved_peak"]), _percent(row["reserved_peak"] / total, 0))
+                   for row in memory["per_rank"])
+    table = [[f'Rank {row["rank"]}', _gib(row["allocated_peak"]), _gib(row["reserved_peak"])] for row in memory["per_rank"]]
+    lede = (f'Allocator peaks over steady updates against {_gib(memory.get("total_bytes"))} of device memory, which is the '
+            f'full width of each bar. Headroom at the reserved peak: {_gib(memory.get("headroom_bytes"))}.')
+    return _section("memory", "Memory", lede, f'<div class="bars">{bars}</div>'
+                    + _legend([("Allocated by tensors", "use"), ("Allocator cache", "use-2")])
+                    + _table_view(["Rank", "Allocated", "Reserved"], table, numeric=(1, 2)))
+
+
+def _wall(summary):
+    rows = summary.get("wall_accounting") or []
+    if not rows:
+        return ""
+    parts = [(row["phase"], PHASE_LABELS.get(row["phase"], row["phase"]), row["seconds"], PHASE_TONES.get(row["phase"], "idle"))
+             for row in rows]
+    total = sum(row["seconds"] for row in rows)
+    return _section("wall-time", "Wall time of this profile",
+                    f'Rank 0 from trainer start to exit: {_seconds(total)}. Only steady updates measure throughput.',
+                    _segments(parts) + _legend([(label, tone) for _, label, _, tone in parts])
+                    + _table_view(["Phase", "Time"], [[_text(label), _seconds(seconds)] for _, label, seconds, _ in parts], numeric=(1,)))
+
+
+# Telemetry heatmap ------------------------------------------------------------------------------------------------
+
+def _lagging(rows):
     return set(lagging_gpus({int(row.get("index", 0)): float(row["gpu_util_mean_pct"])
                              for row in rows if isinstance(row.get("gpu_util_mean_pct"), (int, float))}))
 
 
-def _telemetry_table(rows: list[dict]) -> str:
-    if not rows:
-        return '<p class="muted">No GPU telemetry samples fell inside the profile interval.</p>'
-    body = []
-    lagging = _lagging(rows)
-    for row in rows:
-        warning = ' class="low"' if int(row.get("index", 0)) in lagging else ""
-        body.append(
-            f"<tr{warning}><td>GPU {row.get('index', '?')}</td>"
-            f"<td>{_number(row.get('gpu_util_mean_pct', 0), 1)}%</td>"
-            f"<td>{_number(row.get('memory_used_peak_mib', 0), 0)} MiB</td>"
-            f"<td>{_number(row.get('power_mean_w', 0), 1)} W</td>"
-            f"<td>{_number(row.get('sm_clock_mean_mhz', 0), 0)} MHz</td></tr>"
-        )
-    return '<table><thead><tr><th>GPU</th><th>Mean utilization</th><th>Peak memory</th><th>Mean power</th><th>Mean SM clock</th></tr></thead><tbody>' + ''.join(body) + '</tbody></table>'
+def _fallback_samples(per_gpu):
+    """One honest time bucket for summaries produced before per-sample telemetry."""
+    return [dict(time_offset_sec=0.0, index=row.get("index", 0), uuid=row.get("uuid", ""), gpu_util=row.get("gpu_util_mean_pct"),
+                 memory_used_pct=row.get("memory_used_peak_pct"), power=row.get("power_mean_w")) for row in per_gpu]
 
 
-def _fallback_samples(per_gpu: list[dict]) -> list[dict]:
-    """Make one honest time bucket for summaries produced before heatmap v2."""
-    return [
-        {
-            "time_offset_sec": 0.0,
-            "index": row.get("index", 0),
-            "uuid": row.get("uuid", ""),
-            "gpu_util": row.get("gpu_util_mean_pct"),
-            "memory_used_pct": row.get("memory_used_peak_pct"),
-            "power": row.get("power_mean_w"),
-        }
-        for row in per_gpu
-    ]
-
-
-def _heatmap_payload(summary: dict) -> dict:
+def _heatmap_payload(summary):
     telemetry = summary.get("telemetry_summary", {})
     per_gpu = telemetry.get("per_gpu", [])
     samples = telemetry.get("samples") or _fallback_samples(per_gpu)
@@ -65,12 +657,13 @@ def _heatmap_payload(summary: dict) -> dict:
         start, end = offsets[0], offsets[-1]
         width = (end - start) / 80 or 1.0
         offsets = [round(start + (index + 0.5) * width, 3) for index in range(80)]
-    bucket_for = lambda offset: min(range(len(offsets)), key=lambda index: abs(offsets[index] - offset))
-    values: dict[tuple[int, int], dict[str, float]] = defaultdict(dict)
-    grouped: dict[tuple[int, int], list[dict]] = defaultdict(list)
+
+    def bucket_for(offset):
+        return min(range(len(offsets)), key=lambda index: abs(offsets[index] - offset))
+
+    values, grouped = defaultdict(dict), defaultdict(list)
     for sample in valid:
-        gpu = int(sample.get("index", 0))
-        grouped[(gpu, bucket_for(round(float(sample["time_offset_sec"]), 3)))].append(sample)
+        grouped[(int(sample.get("index", 0)), bucket_for(round(float(sample["time_offset_sec"]), 3)))].append(sample)
     for key, rows in grouped.items():
         for metric in ("gpu_util", "memory_used_pct", "power"):
             numbers = [float(row[metric]) for row in rows if isinstance(row.get(metric), (int, float))]
@@ -78,94 +671,15 @@ def _heatmap_payload(summary: dict) -> dict:
                 values[key][metric] = sum(numbers) / len(numbers)
         if "gpu_util" in values[key]:
             values[key]["wait_idle_ratio"] = 100.0 - values[key]["gpu_util"]
-    max_gpu = max((int(row.get("index", 0)) for row in per_gpu), default=-1)
-    max_gpu = max(max_gpu, *(int(sample.get("index", 0)) for sample in valid), 7)
-    rows = []
+    max_gpu = max(max((int(row.get("index", 0)) for row in per_gpu), default=-1),
+                  *(int(sample.get("index", 0)) for sample in valid), 7)
     low_gpu = _lagging(per_gpu)
-    for gpu in range(max_gpu + 1):
-        cells = [{"bucket": bucket, **values.get((gpu, bucket), {})} for bucket in range(len(offsets))]
-        rows.append({"gpu": gpu, "low": gpu in low_gpu, "cells": cells})
+    rows = [{"gpu": gpu, "low": gpu in low_gpu, "cells": [{"bucket": bucket, **values.get((gpu, bucket), {})}
+                                                         for bucket in range(len(offsets))]} for gpu in range(max_gpu + 1)]
     return {"offsets": offsets, "rows": rows, "low_gpu": sorted(low_gpu)}
 
 
-def _heatmap_html(summary: dict) -> str:
-    payload = _heatmap_payload(summary)
-    offsets = payload["offsets"]
-    columns = ''.join(
-        f'<th scope="col" data-time-header="{index}">{_number(offset, 1)}s</th>'
-        for index, offset in enumerate(offsets)
-    )
-    body = []
-    for row in payload["rows"]:
-        marker = '<span class="low-flag" title="Low utilization">⚠</span>' if row["low"] else ''
-        cells = []
-        for cell in row["cells"]:
-            attributes = [
-                f'data-gpu-row="{row["gpu"]}"',
-                f'data-time-bucket="{cell["bucket"]}"',
-            ]
-            for metric in ("gpu_util", "memory_used_pct", "power", "wait_idle_ratio"):
-                value = cell.get(metric)
-                if value is not None:
-                    attributes.append(f'data-{metric}="{value:.6f}"')
-            value = cell.get("gpu_util")
-            fill = "" if value is None else f' style="--cell-value:{max(0.0, min(100.0, value)):.3f}"'
-            label = "unavailable" if value is None else f'{value:.1f}%'
-            cells.append(f'<td class="heat-cell" {" ".join(attributes)}{fill} title="{label}"></td>')
-        body.append(f'<tr><th scope="row">GPU {row["gpu"]} {marker}</th>{"".join(cells)}</tr>')
-    data = html.escape(json.dumps(payload, separators=(",", ":")), quote=False)
-    return f"""
-<section id="gpu-heatmap" class="panel heatmap-panel" aria-labelledby="heatmap-title">
-<div class="section-heading"><div><h2 id="heatmap-title">GPU × time heatmap</h2><p class="muted">Telemetry buckets cover the captured profile interval. Missing samples remain unavailable.</p></div>
-<label class="metric-switch">Metric <select id="heatmap-metric"><option value="gpu_util">GPU utilization</option><option value="memory_used_pct">Memory used %</option><option value="power">Power</option><option value="wait_idle_ratio">Wait / idle ratio</option></select></label></div>
-<div class="heatmap-scroll"><table class="heatmap-grid"><thead>{_phase_row(summary, offsets)}<tr><th scope="col">GPU</th>{columns}</tr></thead><tbody>{"".join(body)}</tbody></table></div>
-<div class="heatmap-legend" aria-label="Heatmap color scale"><span>Low</span><i></i><i></i><i></i><i></i><i></i><span>High</span><span class="muted">Cells show the selected metric; ⚠ marks low utilization.</span></div>
-<script type="application/json" id="heatmap-data">{data}</script>
-<script>
-(() => {{
-  const select = document.getElementById('heatmap-metric');
-  const cells = [...document.querySelectorAll('#gpu-heatmap .heat-cell')];
-  const update = () => {{
-    const metric = select.value;
-    const values = cells.map(cell => Number(cell.dataset[metric])).filter(Number.isFinite);
-    const low = values.length ? Math.min(...values) : 0;
-    const high = values.length ? Math.max(...values) : 1;
-    cells.forEach(cell => {{
-      const value = Number(cell.dataset[metric]);
-      if (!Number.isFinite(value)) {{ cell.style.setProperty('--cell-value', ''); cell.title = 'unavailable'; return; }}
-      const normalized = high === low ? 0.5 : (value - low) / (high - low);
-      cell.style.setProperty('--cell-value', String(normalized * 100));
-      cell.title = `${{value.toFixed(1)}} ${{metric}}`;
-    }});
-  }};
-  select.addEventListener('change', update); update();
-}})();
-</script>
-</section>"""
-
-
-PHASE_LABELS = {"startup": "Startup", "warmup": "Warmup", "steady": "Steady", "traced": "Traced",
-                "validation": "Validation", "core": "CORE", "checkpoint": "Checkpoint"}
-STAGE_LABELS = {"step_setup": "Step setup", "data": "Data", "forward": "Forward", "backward": "Backward",
-                "grad_norm": "Gradient norm", "wait": "Host wait", "optimizer.reduce": "Optimizer reduce",
-                "optimizer.compute": "Optimizer compute", "optimizer.gather": "Optimizer gather",
-                "step_tail": "Step tail", "unattributed": "Unattributed"}
-
-
-def _text(value) -> str:
-    return html.escape(str(value))
-
-
-def _seconds(value: float) -> str:
-    if value >= 1:
-        return f"{value:,.2f} s"
-    if value >= 1e-3:
-        return f"{value * 1e3:,.1f} ms"
-    return f"{value * 1e6:,.0f} µs"
-
-
-def _phase_row(summary: dict, offsets: list[float]) -> str:
-    """Phase of each heatmap column, from rank 0's stage timeline."""
+def _phase_row(summary, offsets):
     bands = summary.get("telemetry_summary", {}).get("phase_bands") or []
     if not bands:
         return ""
@@ -173,487 +687,311 @@ def _phase_row(summary: dict, offsets: list[float]) -> str:
     for offset in offsets:
         phase = next((band["phase"] for band in bands if band["start"] <= offset <= band["end"]), None)
         label = PHASE_LABELS.get(phase, "—") if phase else "—"
-        cells.append(f'<td class="phase-cell" data-phase="{_text(phase or "none")}" title="{_text(label)}"></td>')
+        cells.append(f'<td class="phase-cell tone-{PHASE_TONES.get(phase, "none")}" data-phase="{_text(phase or "none")}" '
+                     f'title="{_text(label)}"></td>')
     return f'<tr class="phase-row"><th scope="row">Phase</th>{"".join(cells)}</tr>'
 
 
-def _findings_html(summary: dict) -> str:
-    findings = summary.get("findings") or []
-    if not findings:
-        return ""
-    items = "".join(
-        f'<li class="finding {_text(finding["severity"])}" data-finding="{_text(finding["id"])}">'
-        f'<b>{_text(finding["title"])}</b><span>{_text(finding["detail"])}</span></li>'
-        for finding in findings
-    )
-    return f'<section id="findings" class="panel"><h2>What to look at first</h2><ul class="findings">{items}</ul></section>'
-
-
-def _shape_html(summary: dict) -> str:
-    shape = summary.get("shape")
-    if not shape:
-        return ""
-    flops = shape.get("model_flops_per_gpu_s")
-    rate = f" · {flops / 1e12:,.1f} model TFLOP/s per GPU (audited theory FLOPs)" if flops else ""
-    software = " · ".join(f"{_text(key.replace('_', ' '))} {_text(value)}" for key, value in (summary.get("software") or {}).items())
-    return (f'<p class="muted">{shape["world"]} ranks × micro-batch {shape["micro_batch"]} × '
-            f'{shape["accumulation"]} accumulation = {shape["tokens_per_update"]:,} tokens per update{rate}.'
-            + (f'<br>{software}' if software else "") + '</p>')
-
-
-def _projection_html(summary: dict) -> str:
-    projection = summary.get("projection")
-    if not projection or not projection.get("representative") or "estimated_hours" not in projection:
-        return ""
-    rows = [("Training updates", f'{projection["updates"]:,}', projection["training_hours"])]
-    if "validation_hours" in projection:
-        rows.append(("Validation events", f'{projection["validation_events"]}', projection["validation_hours"]))
-    if "checkpoint_hours" in projection:
-        rows.append(("Rolling checkpoints", f'{projection["checkpoints"]} (every {projection["checkpoint_interval"]})'
-                     if "checkpoint_interval" in projection else f'{projection["checkpoints"]}',
-                     projection["checkpoint_hours"]))
-    body = "".join(f"<tr><td>{label}</td><td>{count}</td><td>{hours:,.1f} h</td></tr>" for label, count, hours in rows)
-    total = projection["estimated_hours"]
-    missing = "CORE-22 evaluation is not measured here and comes on top."
-    if "validation_hours" not in projection and "validation_events" in projection:
-        missing = (f'Validation ({projection["validation_events"]} events) and CORE-22 are not included: this profile '
-                   f'validated only {projection.get("validation_measured_tokens", 0):,} tokens. Rerun with '
-                   f'<code>--validation-tokens</code> set to the formal size to measure validation.')
-    return (f'<section id="projection" class="panel"><h2>Formal run estimate</h2>'
-            f'<p><span class="value">{total:,.1f} h</span> ≈ {total / 24:,.1f} days on this machine, from the median '
-            f'steady update. {missing}</p>'
-            f'<table><thead><tr><th>Part</th><th>Count</th><th>Time</th></tr></thead><tbody>{body}</tbody></table></section>')
-
-
-def _stages_html(summary: dict) -> str:
-    stages = summary.get("stage_summary") or {}
-    rows = stages.get("stages") or []
-    if not rows:
-        return ('<section id="stages" class="panel"><h2>Where an update spends its time</h2><p class="muted">Stage '
-                'timings are unavailable: this profile predates the stage timer or the trainer exited early.</p></section>')
-    timing = "CUDA events on each rank's stream" if stages.get("timing") == "cuda_events" else "host clocks"
-    step = stages["step_seconds"]
-    bar = "".join(f'<span class="seg" data-stage="{_text(row["stage"])}" style="width:{100 * row["share"]:.3f}%" '
-                  f'title="{_text(STAGE_LABELS.get(row["stage"], row["stage"]))}: {_seconds(row["seconds"])}"></span>'
-                  for row in rows)
-    body = []
-    for row in rows:
-        spread = row["rank_max"] - row["rank_min"]
-        ranks = "".join(f"<li>rank {rank}: {_seconds(value)}</li>" for rank, value in row.get("per_rank", []))
-        body.append(
-            f'<details class="stage-row" data-stage="{_text(row["stage"])}"><summary>'
-            f'<span class="swatch" data-stage="{_text(row["stage"])}"></span>'
-            f'<b>{_text(STAGE_LABELS.get(row["stage"], row["stage"]))}</b>'
-            f'<span>{_seconds(row["seconds"])}</span><span>{100 * row["share"]:.1f}%</span>'
-            f'<span class="muted">host {_seconds(row["host_seconds"])}</span>'
-            f'<span class="muted">rank spread {_seconds(spread)} (slowest rank {row["slowest_rank"]})</span>'
-            f'</summary><ul class="ranks">{ranks}</ul></details>'
-        )
-    return (f'<section id="stages" class="panel"><h2>Where an update spends its time</h2>'
-            f'<p class="muted">Mean of steady updates {", ".join(map(str, stages["steady_steps"]))} over all ranks, '
-            f'timed with {timing}: {_seconds(step)} per update. Each stage runs from the trainer entering it to entering '
-            f'the next; host wait is time the host blocks on the GPU. Expand a stage for per-rank times.</p>'
-            f'<div class="waterfall">{bar}</div>{"".join(body)}</section>')
-
-
-def _wall_html(summary: dict) -> str:
-    rows = summary.get("wall_accounting") or []
-    if not rows:
-        return ""
-    total = sum(row["seconds"] for row in rows) or 1.0
-    bar = "".join(f'<span class="seg" data-phase="{_text(row["phase"])}" style="width:{100 * row["seconds"] / total:.3f}%" '
-                  f'title="{_text(PHASE_LABELS.get(row["phase"], row["phase"]))}: {_seconds(row["seconds"])}"></span>'
-                  for row in rows)
-    legend = "".join(f'<li><span class="swatch" data-phase="{_text(row["phase"])}"></span>'
-                     f'{_text(PHASE_LABELS.get(row["phase"], row["phase"]))} {_seconds(row["seconds"])} '
-                     f'({100 * row["seconds"] / total:.0f}%)</li>' for row in rows)
-    return (f'<section id="wall-time" class="panel"><h2>Wall time of this profile</h2><p class="muted">Rank 0 from '
-            f'trainer start to exit: {_seconds(total)}. Only steady updates measure training throughput.</p>'
-            f'<div class="waterfall">{bar}</div><ul class="legend">{legend}</ul></section>')
-
-
-def _activity_html(trace: dict) -> str:
-    rows = trace.get("per_gpu") or []
-    if not rows:
-        return ""
-    body = []
-    for row in rows:
-        window = row["window_s"] or 1.0
-        parts = (("compute", row["compute_s"] - row["overlap_s"]), ("overlap", row["overlap_s"]),
-                 ("communication", row["exposed_communication_s"]), ("memory", row["memory_s"]), ("idle", row["idle_s"]))
-        bar = "".join(f'<span class="seg" data-activity="{name}" style="width:{100 * max(value, 0) / window:.3f}%" '
-                      f'title="{name}: {_seconds(max(value, 0))}"></span>' for name, value in parts)
-        body.append(f'<tr><th scope="row">GPU {row["gpu"]}</th><td class="bar-cell"><div class="waterfall">{bar}</div></td>'
-                    f'<td>{100 * row["compute_s"] / window:.0f}%</td><td>{100 * row["overlap_s"] / window:.0f}%</td>'
-                    f'<td>{100 * row["exposed_communication_s"] / window:.0f}%</td>'
-                    f'<td>{100 * row["idle_s"] / window:.0f}%</td></tr>')
-    legend = "".join(f'<li><span class="swatch" data-activity="{name}"></span>{label}</li>' for name, label in (
-        ("compute", "Compute only"), ("overlap", "Compute + communication"), ("communication", "Exposed communication"),
-        ("memory", "Memory copies"), ("idle", "Idle")))
-    return (f'<section id="gpu-activity" class="panel"><h2>GPU activity in traced updates</h2>'
-            f'<p class="muted">Share of the traced window on each GPU by what its kernels were doing. Exposed communication '
-            f'runs with no compute kernel alongside it.</p><ul class="legend">{legend}</ul><table class="activity">'
-            f'<thead><tr><th>GPU</th><th>Timeline</th><th>Compute</th><th>Overlap</th><th>Exposed communication</th>'
-            f'<th>Idle</th></tr></thead><tbody>{"".join(body)}</tbody></table></section>')
-
-
-def _tree_rows(nodes: list[dict], total: float, depth: int) -> str:
-    items = []
-    for node in nodes:
-        label = STAGE_LABELS.get(node["name"], node["name"]) if depth == 0 else node["name"]
-        share = 100 * node["seconds"] / total if total else 0.0
-        line = (f'<span class="name" title="{_text(label)}">{_text(label)}</span><span class="meter" style="--share:{share:.3f}%"></span>'
-                f'<span>{_seconds(node["seconds"])}</span><span>{share:.1f}%</span>'
-                f'<span class="muted">{node["count"]:,.0f} launches</span>')
-        if node["children"]:
-            items.append(f'<details data-depth="{depth}"><summary>{line}</summary>'
-                         f'{_tree_rows(node["children"], total, depth + 1)}</details>')
-        else:
-            items.append(f'<div class="leaf" data-depth="{depth}">{line}</div>')
-    return "".join(items)
-
-
-def _trace_html(summary: dict) -> str:
-    trace = summary.get("trace_summary")
-    if not trace:
-        return ('<section id="kernel-tree" class="panel"><h2>Operators and kernels</h2><p class="muted">No trace in '
-                'this profile. Rerun with <code>--trace torch</code> for a stage → category → operator → kernel '
-                'breakdown of rank 0, or <code>--trace nsys</code> for the kernels of every rank.</p></section>')
-    total = sum(node["seconds"] for node in trace["tree"])
-    source = ("PyTorch profiler, operators from the CPU op that launched each kernel" if trace["source"] == "torch"
-              else "Nsight Systems, kernels of every rank")
-    top = "".join(f'<tr><td>{_text(row["name"])}</td><td>{_text(row["category"])}</td><td>{row["count"]:,.0f}</td>'
-                  f'<td>{_seconds(row["seconds"])}</td><td>{row["mean_us"]:,.1f} µs</td></tr>' for row in trace["top_kernels"])
-    small = trace.get("small_kernels", {})
-    return (f'{_activity_html(trace)}{_communication_html(trace)}{_scheduling_html(trace)}{_timeline_html(trace)}'
-            f'{_components_html(trace)}<section id="kernel-tree" class="panel"><h2>Operators and kernels</h2>'
-            f'<p class="muted">GPU time per traced update and rank ({source}; {trace["steps"]} update(s), '
-            f'{trace["ranks"]} rank(s)). Each kernel belongs to the stage that launched it, so an asynchronous collective '
-            f'appears where it was issued (the optimizer issues its parameter all-gathers while computing updates). '
-            f'Kernels running concurrently on different streams are counted separately, so the total can exceed the '
-            f'update time. {100 * small.get("count_share", 0):.0f}% of kernels run under '
-            f'10 µs.</p><div class="tree">{_tree_rows(trace["tree"], total, 0)}</div></section>'
-            f'<section id="top-kernels" class="panel"><details><summary><h2>Top kernels</h2></summary><table><thead><tr>'
-            f'<th>Kernel</th><th>Category</th><th>Launches</th><th>Time</th><th>Mean</th></tr></thead><tbody>{top}'
-            f'</tbody></table></details></section>{_matrix_html(trace)}{_other_operators_html(trace)}')
-
-
-def _amount(value, unit, suffix, digits=1, empty="—") -> str:
-    return empty if not value else f"{value / unit:,.{digits}f} {suffix}".rstrip()
-
-
-def _percent(value, digits=1) -> str:
-    return "—" if value is None else f"{100 * value:.{digits}f}%"
-
-
-def _tflops(value) -> str:
-    return "—" if value is None else f"{value / 1e12:,.1f} TFLOP/s"
-
-
-def _gib(value) -> str:
-    return "—" if value is None else f"{value / 2**30:,.2f} GiB"
-
-
-WATERFALL_PARTS = {"ideal": "Ideal at peak", "gemm below peak": "GEMM below peak",
-                   "attention below peak": "Attention below peak", "matrix kernels below peak": "Matrix kernels below peak",
-                   "other compute kernels": "Other compute kernels", "exposed communication": "Exposed communication",
-                   "exposed memory copies": "Exposed memory copies", "idle": "GPU idle"}
-WATERFALL_NOTES = {
-    "ideal": "audited model FLOPs of the update at the dense peak",
-    "gemm below peak": "matrix multiplies run slower than peak",
-    "attention below peak": "attention kernels run slower than peak",
-    "matrix kernels below peak": "matrix multiplies and attention run slower than peak",
-    "other compute kernels": "elementwise, normalization, casts, copies and the optimizer",
-    "exposed communication": "collectives with no compute kernel alongside",
-    "exposed memory copies": "memory copies and sets with no other kernel alongside",
-    "idle": "no kernel runs: the host is late or the GPU waits for a dependency",
-}
-
-
-def _detail(rows) -> str:
-    if not rows:
-        return ""
-    return " (kernel time: " + ", ".join(f'{_text(row["category"])} {_seconds(row["seconds"])}' for row in rows[:5]) + ")"
-
-
-def _other_operators_html(trace: dict) -> str:
-    rows = trace.get("other_operators") or []
-    if not rows:
-        return ""
-    body = "".join(f'<tr><td>{_text(STAGE_LABELS.get(row["stage"], row["stage"]))}</td><td class="mono">{_text(row["op"])}</td>'
-                   f'<td>{_text(row["category"])}</td><td>{row["calls"]:,.0f}</td><td>{_seconds(row["seconds"])}</td></tr>'
-                   for row in rows)
-    return (f'<section id="other-operators" class="panel"><details><summary><h2>Non-matrix operators</h2></summary>'
-            f'<p class="muted">Operators whose kernels are neither matrix multiplies nor attention, by GPU time per traced '
-            f'update: the candidates for fusion.</p><table><thead><tr><th>Stage</th><th>Operator</th><th>Kernels</th>'
-            f'<th>Launches</th><th>Time</th></tr></thead><tbody>{body}</tbody></table></details></section>')
-
-
-def _mfu_html(summary: dict) -> str:
-    mfu = summary.get("mfu_summary")
-    hardware = summary.get("hardware") or {}
-    if not mfu:
-        return ""
-    cards = [("MFU", _percent(mfu["mfu"]), f'of {_tflops(mfu["peak_flops"])} dense BF16 per GPU'),
-             ("Model FLOPs", _tflops(mfu["achieved_flops"]), "audited FLOPs per GPU and second")]
-    if mfu.get("clock_mfu") is not None:
-        cards.append(("MFU at the measured clock", _percent(mfu["clock_mfu"]),
-                      f'peak {_tflops(mfu["clock_peak_flops"])} at the mean SM clock of the steady updates'))
-    grid = "".join(f'<div class="card"><span class="muted">{label}</span><span class="value">{value}</span>'
-                   f'<span class="muted small">{note}</span></div>' for label, value, note in cards)
-    phases = "".join(
-        f'<tr><td>{_text(STAGE_LABELS.get(row["phase"], row["phase"].capitalize()))}</td><td>{_seconds(row["seconds"])}</td>'
-        f'<td>{_amount(row["flops"], 1e12, "TFLOP")}</td>'
-        f'<td>{_tflops(row["achieved_flops"])}</td><td>{_percent(row["mfu"])}</td></tr>' for row in mfu["phases"])
-    kernels = "".join(
-        f'<tr><td>{"GEMM" if row["kind"] == "gemm" else "Attention"} kernels</td><td>{_seconds(row["seconds"])}</td>'
-        f'<td>{_amount(row["flops"], 1e12, "TFLOP")}</td>'
-        f'<td>{_amount(row["tflops"], 1, "TFLOP/s")}</td>'
-        f'<td>{_percent(row["efficiency"])}</td></tr>' for row in mfu["kernels"])
-    waterfall = ""
-    if mfu["waterfall"]:
-        total = mfu.get("traced_window_s") or sum(max(row["seconds"], 0) for row in mfu["waterfall"]) or 1.0
-        bar = "".join(f'<span class="seg" data-part="{_text(row["part"])}" style="width:{100 * max(row["seconds"], 0) / total:.3f}%" '
-                      f'title="{_text(WATERFALL_PARTS.get(row["part"], row["part"]))}: {_seconds(max(row["seconds"], 0))}"></span>'
-                      for row in mfu["waterfall"])
-        items = "".join(
-            f'<tr data-part="{_text(row["part"])}"><td><span class="swatch" data-part="{_text(row["part"])}"></span>'
-            f'{_text(WATERFALL_PARTS.get(row["part"], row["part"]))}</td><td>{_seconds(max(row["seconds"], 0))}</td>'
-            f'<td>{_percent(row["share"])}</td><td class="muted">{_text(WATERFALL_NOTES.get(row["part"], ""))}'
-            f'{_detail(row.get("detail"))}</td></tr>' for row in mfu["waterfall"])
-        waterfall = (f'<h3>Where the update loses MFU</h3><p class="muted">The traced update ({_seconds(total)} on rank 0) '
-                     f'split into the time the audited FLOPs would take at peak and what is spent beyond it. Shares are of '
-                     f'the traced update.</p><div class="waterfall">{bar}</div><table><thead><tr><th>Part</th><th>Time</th>'
-                     f'<th>Share</th><th></th></tr></thead><tbody>{items}</tbody></table>')
-    basis = _text(hardware.get("basis", ""))
-    return (f'<section id="mfu" class="panel"><h2>Model FLOPs utilization</h2><p class="muted">MFU counts the audited '
-            f'theory FLOPs the trainer charges for an update (the cost proof of the configuration), so recomputation or '
-            f'padding never raises it. Peak: {basis}.</p><div class="grid">{grid}</div>'
-            f'<h3>By phase</h3><table><thead><tr><th>Phase</th><th>Time</th><th>FLOPs per GPU</th><th>Rate</th><th>MFU</th>'
-            f'</tr></thead><tbody>{phases}</tbody></table>'
-            + (f'<h3>Matrix kernels</h3><p class="muted">GEMM FLOPs from operator shapes in the trace, attention FLOPs from '
-               f'the audit (custom attention kernels carry no shapes), each timed by its kernels.</p>'
-               f'<table><thead><tr><th>Kernels</th><th>Time</th><th>FLOPs</th><th>Rate</th><th>Of peak</th></tr></thead>'
-               f'<tbody>{kernels}</tbody></table>' if kernels else "")
-            + f'{waterfall}</section>')
-
-
-def _communication_html(trace: dict) -> str:
-    rows = trace.get("communication") or []
-    if not rows:
-        return ""
-    body = "".join(
-        f'<tr><td>{_text(row["collective"])}</td><td>{_text(row["dtype"])}</td>'
-        f'<td>{_text(STAGE_LABELS.get(row["stage"], row["stage"]))}</td><td>{row["calls"]:,.0f}</td>'
-        f'<td>{_amount(row["bytes"], 1e9, "GB", 2)}</td><td>{_seconds(row["seconds"])}</td>'
-        f'<td>{_seconds(row["exposed_s"])}</td>'
-        f'<td>{_amount(row["algbw_gbps"], 1, "GB/s")}</td>'
-        f'<td>{_amount(row["busbw_gbps"], 1, "GB/s")}</td>'
-        f'<td class="mono">{_text(row["kernel"])}</td></tr>' for row in rows)
-    return (f'<section id="communication" class="panel"><h2>Communication</h2><p class="muted">Collectives per traced '
-            f'update and rank, grouped by type, data type and the stage that issued them. Exposed time has no compute '
-            f'kernel alongside it. Bus bandwidth follows nccl-tests and is comparable with the link bandwidth.</p>'
-            f'<table><thead><tr><th>Collective</th><th>Type</th><th>Stage</th><th>Calls</th><th>Bytes</th><th>Time</th>'
-            f'<th>Exposed</th><th>Algorithm bandwidth</th><th>Bus bandwidth</th><th>Kernel</th></tr></thead>'
-            f'<tbody>{body}</tbody></table></section>')
-
-
-def _scheduling_html(trace: dict) -> str:
-    launch, idle, syncs = trace.get("launch"), trace.get("idle"), trace.get("syncs") or []
-    if not launch:
-        return ""
-    per_micro = launch.get("per_micro_batch")
-    cards = [("Kernels per update", f'{launch["kernels"]:,.0f}',
-              f'{per_micro:,.0f} kernels per micro-batch' if per_micro else ""),
-             ("Host time in launch calls", _seconds(launch["host_s"]), f'{launch["api_calls"]:,.0f} launch API calls'),
-             ("Memory operations", f'{launch["memory_ops"]:,.0f}', "copies and sets per update")]
-    if idle:
-        cards.append(("GPU idle", _seconds(idle["total_s"]), f'{idle["gaps"]:,.0f} gaps between kernels'))
-    grid = "".join(f'<div class="card"><span class="muted">{label}</span><span class="value">{value}</span>'
-                   f'<span class="muted small">{note}</span></div>' for label, value, note in cards)
-    causes = ""
-    if idle and idle["total_s"]:
-        rows = (("host", "Host late", "the next kernel was launched after the GPU ran out of work"),
-                ("launch", "Launch latency", "launched in time, started after the driver queued it"),
-                ("dependency", "Waiting on a dependency", "launched earlier, waited for another stream or event"))
-        causes = "".join(f'<tr><td>{label}</td><td>{_seconds(idle[f"{key}_s"])}</td>'
-                         f'<td>{_percent(idle[f"{key}_s"] / idle["total_s"], 0)}</td><td class="muted">{note}</td></tr>'
-                         for key, label, note in rows)
-        largest = "".join(f'<li>{_seconds(row["seconds"])} at {row["start_s"]:.3f} s ({_text(row["cause"])}, before '
-                          f'<span class="mono">{_text(row["next"])}</span> in {_text(STAGE_LABELS.get(row["stage"], row["stage"]))})</li>'
-                          for row in idle.get("largest", [])[:6])
-        causes = (f'<h3>Why GPUs idle</h3><table><thead><tr><th>Cause</th><th>Time</th><th>Share</th><th></th></tr></thead>'
-                  f'<tbody>{causes}</tbody></table><details><summary>Largest gaps</summary><ul>{largest}</ul></details>')
-    sync_rows = "".join(f'<tr><td class="mono">{_text(row["api"])}</td><td class="mono">{_text(row["source"])}</td>'
-                        f'<td>{_text(STAGE_LABELS.get(row["stage"], row["stage"]))}</td><td>{row["calls"]:,.0f}</td>'
-                        f'<td>{_seconds(row["seconds"])}</td></tr>' for row in syncs[:10])
-    sync_html = (f'<h3>Host synchronizations</h3><p class="muted">Calls that block the host until the GPU catches up; '
-                 f'while the host waits it cannot queue the next kernels.</p><table><thead><tr><th>API</th><th>From</th>'
-                 f'<th>Stage</th><th>Calls</th><th>Host blocked</th></tr></thead><tbody>{sync_rows}</tbody></table>'
-                 if sync_rows else "")
-    return (f'<section id="scheduling" class="panel"><h2>Scheduling and synchronization</h2><p class="muted">Per '
-            f'traced update and rank.</p><div class="grid">{grid}</div>{causes}{sync_html}</section>')
-
-
-def _matrix_html(trace: dict) -> str:
-    rows = trace.get("gemm") or []
-    if not rows:
-        return ""
-    body = "".join(
-        f'<tr><td>{"GEMM" if row["kind"] == "gemm" else "Attention"}</td><td>{_text(STAGE_LABELS.get(row["stage"], row["stage"]))}</td>'
-        f'<td class="mono">{_text(row["op"])}</td><td class="mono">{_text(row["shape"])}</td><td>{row["calls"]:,.0f}</td>'
-        f'<td>{_seconds(row["seconds"])}</td><td>{_amount(row["tflops"], 1, "")}</td>'
-        f'<td class="mono">{_text(row["kernel"] or "")}</td></tr>' for row in rows[:30])
-    return (f'<section id="matrix-shapes" class="panel"><details><summary><h2>Matrix shapes</h2></summary>'
-            f'<p class="muted">Every matrix multiply and attention shape per traced update, with the rate its kernels reach '
-            f'(TFLOP/s) and the kernel that took most of its time. A shape far below the others is a tuning target.</p>'
-            f'<table><thead><tr><th>Kind</th><th>Stage</th><th>Operator</th><th>Shape</th><th>Calls</th><th>Time</th>'
-            f'<th>TFLOP/s</th><th>Kernel</th></tr></thead><tbody>{body}</tbody></table></details></section>')
-
-
-def _components_html(trace: dict) -> str:
-    rows = trace.get("components") or []
-    if not rows:
-        return ""
-    total = sum(row["forward_s"] + row["backward_s"] for row in rows) or 1.0
-    body = []
-    for row in rows:
-        seconds = row["forward_s"] + row["backward_s"]
-        layers = "".join(f'<tr><td>layer {layer["layer"]}</td><td>{_seconds(layer["forward_s"])}</td>'
-                         f'<td>{_seconds(layer["backward_s"])}</td></tr>' for layer in row["layers"])
-        line = (f'<span class="name">{_text(row["name"])}</span><span class="meter" style="--share:{100 * seconds / total:.3f}%"></span>'
-                f'<span>{_seconds(row["forward_s"])}</span><span>{_seconds(row["backward_s"])}</span>'
-                f'<span>{_percent(seconds / total)}</span>'
-                f'<span class="muted">{_amount(row["flops"], 1e12, "TFLOP matrix", empty="")}</span>')
-        if layers:
-            body.append(f'<details class="component"><summary>{line}</summary><table class="layers"><thead><tr><th>Layer</th>'
-                        f'<th>Forward</th><th>Backward</th></tr></thead><tbody>{layers}</tbody></table></details>')
-        else:
-            body.append(f'<div class="component leaf">{line}</div>')
-    return (f'<section id="components" class="panel"><h2>Model components</h2><p class="muted">GPU compute time per '
-            f'traced update in each part of the model. Forward kernels belong to the module running when they were '
-            f'launched; backward kernels to the module whose forward created their autograd node. Expand a component for '
-            f'its layers.</p><div class="component-head"><span>Component</span><span></span><span>Forward</span>'
-            f'<span>Backward</span><span>Share</span><span></span></div>{"".join(body)}</section>')
-
-
-def _memory_html(summary: dict) -> str:
-    memory = summary.get("memory_summary")
-    if not memory:
-        return ""
-    cards = [("Peak allocated", _gib(memory["allocated_peak"]), "tensors, largest rank"),
-             ("Peak reserved", _gib(memory["reserved_peak"]),
-              f'{_percent(memory["reserved_share"], 0)} of {_gib(memory["total_bytes"])}' if memory["reserved_share"] else ""),
-             ("Headroom", _gib(memory["headroom_bytes"]), "device memory left at the reserved peak")]
-    grid = "".join(f'<div class="card"><span class="muted">{label}</span><span class="value">{value}</span>'
-                   f'<span class="muted small">{note}</span></div>' for label, value, note in cards)
-    ranks = "".join(f'<tr><td>rank {row["rank"]}</td><td>{_gib(row["allocated_peak"])}</td><td>{_gib(row["reserved_peak"])}</td></tr>'
-                    for row in memory["per_rank"])
-    return (f'<section id="memory" class="panel"><h2>Memory</h2><p class="muted">PyTorch allocator peaks over steady '
-            f'updates. Reserved memory includes the allocator cache; fragmentation shows as reserved far above allocated.'
-            f'</p><div class="grid">{grid}</div><details><summary>Per rank</summary><table><thead><tr><th>Rank</th>'
-            f'<th>Allocated</th><th>Reserved</th></tr></thead><tbody>{ranks}</tbody></table></details></section>')
-
-
-LANES = (("stage", "Stage"), ("compute", "Compute"), ("communication", "Communication"), ("memory", "Memory"))
-
-
-def _timeline_html(trace: dict) -> str:
-    windows = trace.get("timeline") or []
-    if not windows:
-        return ""
-    blocks = []
-    for index, window in enumerate(windows):
-        buckets = window["buckets"] or 1
-        lanes = []
-        labels = set()
-        for lane, title in LANES:
-            runs = "".join(f'<span class="run" data-lane="{lane}" data-label="{_text(label)}" style="left:{100 * first / buckets:.3f}%;'
-                           f'width:{100 * (last - first) / buckets:.3f}%;opacity:{0.35 + 0.65 * intensity:.2f}" '
-                           f'title="{_text(STAGE_LABELS.get(label, label))}"></span>'
-                           for first, last, label, intensity in window["lanes"].get(lane, []))
-            labels.update((lane, label) for _, _, label, _ in window["lanes"].get(lane, []))
-            lanes.append(f'<div class="lane"><span class="lane-title">{title}</span><div class="track">{runs}</div></div>')
-        legend = "".join(f'<li><span class="swatch" data-lane="{lane}" data-label="{_text(label)}"></span>'
-                         f'{_text(STAGE_LABELS.get(label, label))}</li>' for lane, label in sorted(labels))
-        ticks = "".join(f'<span style="left:{fraction * 100:.0f}%">{_seconds(window["start_s"] + fraction * window["seconds"])}</span>'
-                        for fraction in (0, 0.25, 0.5, 0.75, 1))
-        blocks.append(f'<details class="window"{" open" if index == 0 else ""}><summary>{_text(window["name"].capitalize())} '
-                      f'<span class="muted">{_seconds(window["seconds"])} from {_seconds(window["start_s"])}</span></summary>'
-                      f'{"".join(lanes)}<div class="ticks">{ticks}</div><ul class="legend">{legend}</ul></details>')
-    return (f'<section id="timeline" class="panel"><h2>Timeline</h2><p class="muted">The traced update on rank 0, its '
-            f'middle micro-batch, and the tail from the last backward through the optimizer. Each lane shows what ran; '
-            f'paler cells were busy for part of the interval. Open the PyTorch trace in Perfetto for every kernel.</p>'
-            f'{"".join(blocks)}</section>')
-
-
-def render_report(summary: dict) -> str:
-    """Return a self-contained HTML report suitable for local file viewing."""
-    metrics = summary.get("metrics_summary", {})
-    warmup = metrics.get("warmup", {})
-    steady = metrics.get("steady", {})
-    telemetry = summary.get("telemetry_summary", {}).get("per_gpu", [])
+def _heatmap(summary):
     payload = _heatmap_payload(summary)
-    low = payload["low_gpu"]
-    scope_steady = summary.get("telemetry_summary", {}).get("per_gpu_scope") == "steady"
-    # The trace-based findings repeat the lagging-GPU warning; show it once.
-    if any(finding.get("id") == "lagging-gpu" for finding in summary.get("findings") or []):
-        low = []
-    warning = (
-        f"<div class=\"alert\"><strong>Low utilization:</strong> GPU {', GPU '.join(map(str, low))} averaged under half "
-        f"the median GPU utilization during the {'steady' if scope_steady else 'captured'} interval.</div>"
-        if low else ""
-    )
-    status = html.escape(str(summary.get("status", "unknown")))
-    scope = ("Means and peaks over steady updates; the heatmap covers the whole profile."
-             if summary.get("telemetry_summary", {}).get("per_gpu_scope") == "steady"
-             else "Means and peaks over the whole captured profile, including startup, evaluation and checkpoints.")
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NextTransformer profile</title>
-<style>
-:root {{ color-scheme: light dark; --bg:#0d1117; --panel:#161b22; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --warn:#d29922; }}
-* {{ box-sizing:border-box; }} body {{ margin:0; padding:2rem; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,sans-serif; }}
-main {{ max-width:1200px; margin:auto; }} h1 {{ margin:0 0 .3rem; }} h2 {{ margin-top:2rem; }} .muted {{ color:var(--muted); }} .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:1rem; }} .card,.panel {{ background:var(--panel); border:1px solid #30363d; border-radius:10px; padding:1rem; }} .value {{ display:block; color:var(--accent); font-size:1.45rem; font-weight:700; }}
-table {{ width:100%; border-collapse:collapse; background:var(--panel); }} th,td {{ padding:.65rem .75rem; border-bottom:1px solid #30363d; text-align:left; }} th {{ color:var(--muted); font-size:.85rem; }} tr.low {{ background:rgba(210,153,34,.16); }} .alert {{ margin:1rem 0; padding:.8rem 1rem; border-left:4px solid var(--warn); background:rgba(210,153,34,.12); }} code {{ color:var(--accent); }}
-.section-heading {{ display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; }} .metric-switch select {{ margin-left:.4rem; padding:.35rem; background:var(--panel); color:var(--text); border:1px solid #30363d; }} .heatmap-scroll {{ overflow-x:auto; }} .heatmap-grid {{ border-spacing:2px; border-collapse:separate; min-width:max-content; }} .heatmap-grid th,.heatmap-grid td {{ border:0; padding:.3rem .4rem; }} .heatmap-grid thead th {{ position:sticky; top:0; background:var(--panel); }} .heatmap-grid tbody th {{ position:sticky; left:0; background:var(--panel); min-width:90px; }} .heat-cell {{ --cell-value:50; width:32px; height:27px; padding:0 !important; background:color-mix(in srgb, #2f81f7 calc(var(--cell-value) * 1%), #21262d); }} .heat-cell[style*="--cell-value:"] {{ background:linear-gradient(135deg, color-mix(in srgb, #2f81f7 calc(var(--cell-value) * 1%), #21262d), color-mix(in srgb, #f0883e calc(var(--cell-value) * 1%), #21262d)); }} .low-flag {{ color:var(--warn); margin-left:.2rem; }} .heatmap-legend {{ display:flex; align-items:center; gap:.3rem; margin-top:1rem; font-size:.8rem; }} .heatmap-legend i {{ width:22px; height:12px; background:linear-gradient(90deg,#21262d,#2f81f7,#f0883e); }} .heatmap-legend .muted {{ margin-left:.8rem; }} .panel {{ margin-top:1.5rem; }} .panel h2 {{ margin-top:0; }} .findings {{ list-style:none; padding:0; margin:0; display:grid; gap:.5rem; }} .finding {{ display:flex; flex-direction:column; gap:.2rem; padding:.6rem .8rem; border-left:4px solid var(--accent); background:rgba(88,166,255,.08); }} .finding.warning {{ border-color:var(--warn); background:rgba(210,153,34,.12); }} .finding span {{ color:var(--muted); }}
-.waterfall {{ display:flex; height:22px; border-radius:6px; overflow:hidden; background:#21262d; margin:.6rem 0; }} .waterfall .seg {{ display:block; height:100%; min-width:1px; }} .swatch {{ display:inline-block; width:.8rem; height:.8rem; border-radius:3px; margin-right:.35rem; vertical-align:middle; }} .legend {{ list-style:none; padding:0; display:flex; flex-wrap:wrap; gap:.4rem 1rem; font-size:.85rem; }}
-[data-stage="step_setup"],[data-stage="step_tail"] {{ background:#6e7681; }} [data-stage="data"] {{ background:#a371f7; }} [data-stage="forward"] {{ background:#2f81f7; }} [data-stage="backward"] {{ background:#1f6feb; }} [data-stage="grad_norm"] {{ background:#56d364; }} [data-stage="wait"],[data-stage="unattributed"] {{ background:#484f58; }} [data-stage^="optimizer."] {{ background:#f0883e; }} [data-stage="optimizer.compute"] {{ background:#db6d28; }} [data-stage="optimizer.gather"] {{ background:#ffa657; }}
-[data-phase="startup"] {{ background:#484f58; }} [data-phase="warmup"] {{ background:#a371f7; }} [data-phase="steady"] {{ background:#2f81f7; }} [data-phase="traced"] {{ background:#79c0ff; }} [data-phase="validation"] {{ background:#56d364; }} [data-phase="core"] {{ background:#3fb950; }} [data-phase="checkpoint"] {{ background:#d29922; }} [data-phase="none"] {{ background:transparent; }} .phase-cell {{ height:8px; padding:0 !important; }}
-[data-activity="compute"] {{ background:#2f81f7; }} [data-activity="overlap"] {{ background:#a371f7; }} [data-activity="communication"] {{ background:#f0883e; }} [data-activity="memory"] {{ background:#56d364; }} [data-activity="idle"] {{ background:#30363d; }} .activity td.bar-cell {{ width:50%; }} .activity .waterfall {{ margin:0; }}
-details > summary {{ cursor:pointer; list-style:none; }} details > summary::-webkit-details-marker {{ display:none; }} details > summary::before {{ content:"▸"; color:var(--muted); display:inline-block; width:1rem; transition:transform .1s; }} details[open] > summary::before {{ transform:rotate(90deg); }} #top-kernels summary h2,#matrix-shapes summary h2,#other-operators summary h2 {{ display:inline; }}
-.stage-row > summary {{ display:grid; grid-template-columns:1rem 1rem minmax(9rem,1.3fr) 6rem 4rem 8rem 1fr; align-items:center; gap:.4rem; padding:.35rem 0; border-bottom:1px solid #21262d; }} .stage-row .ranks {{ columns:4 10rem; font-size:.85rem; color:var(--muted); margin:.3rem 0 .6rem 2.4rem; }}
-h3 {{ margin:1.2rem 0 .4rem; font-size:1rem; }} .small {{ display:block; font-size:.8rem; }} .mono {{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.8rem; word-break:break-all; }} .panel table {{ font-size:.88rem; }} .panel table td,.panel table th {{ padding:.4rem .55rem; }}
-[data-part="ideal"] {{ background:#3fb950; }} [data-part$="below peak"] {{ background:#2f81f7; }} [data-part="other compute kernels"] {{ background:#a371f7; }} [data-part="exposed communication"] {{ background:#f0883e; }} [data-part="exposed memory copies"] {{ background:#56d364; }} [data-part="idle"] {{ background:#6e7681; }} tr[data-part] {{ background:transparent; }}
-.lane {{ display:grid; grid-template-columns:8rem 1fr; align-items:center; gap:.5rem; margin:.2rem 0; }} .lane-title {{ color:var(--muted); font-size:.8rem; }} .track {{ position:relative; height:18px; background:#21262d; border-radius:4px; overflow:hidden; }} .run {{ position:absolute; top:0; bottom:0; min-width:1px; }} .ticks {{ position:relative; height:1.2rem; margin-left:8.5rem; font-size:.72rem; color:var(--muted); }} .ticks span {{ position:absolute; transform:translateX(-50%); white-space:nowrap; }} .ticks span:first-child {{ transform:none; }} .ticks span:last-child {{ transform:translateX(-100%); }} .window {{ margin:.6rem 0; }}
-[data-lane="stage"][data-label="forward"] {{ background:#8b949e; }} [data-lane="stage"][data-label="backward"] {{ background:#c9d1d9; }} [data-lane="stage"][data-label="data"] {{ background:#a371f7; }} [data-lane="stage"][data-label^="optimizer"] {{ background:#f0883e; }} [data-lane="stage"][data-label="grad_norm"] {{ background:#56d364; }} [data-lane="stage"][data-label="wait"],[data-lane="stage"][data-label="step_setup"],[data-lane="stage"][data-label="step_tail"],[data-lane="stage"][data-label="unattributed"],[data-label="other"] {{ background:#484f58; }} [data-lane="compute"][data-label="optimizer"] {{ background:#ffa657; }} [data-label="gemm"] {{ background:#2f81f7; }} [data-label="attention"] {{ background:#d2a8ff; }} [data-label="elementwise"] {{ background:#ff7b72; }} [data-label="normalization"] {{ background:#ffa657; }} [data-label="fused"] {{ background:#79c0ff; }} [data-label="copy"],[data-label="memory"] {{ background:#56d364; }} [data-label="reduction"],[data-label="softmax"] {{ background:#e3b341; }} [data-label="all_reduce"] {{ background:#f0883e; }} [data-label="all_gather"] {{ background:#db6d28; }} [data-label="reduce_scatter"],[data-label="broadcast"],[data-label="nccl"] {{ background:#bd561d; }}
-.component-head,.component > summary,.component.leaf {{ display:grid; grid-template-columns:1rem minmax(10rem,1.6fr) minmax(4rem,1fr) 6rem 6rem 4.5rem 9rem; gap:.5rem; align-items:center; padding:.3rem 0; border-bottom:1px solid #21262d; font-size:.88rem; }} .component-head {{ color:var(--muted); font-size:.8rem; }} .component.leaf {{ padding-left:1rem; grid-template-columns:minmax(10rem,1.6fr) minmax(4rem,1fr) 6rem 6rem 4.5rem 9rem; }} .component-head {{ padding-left:1rem; grid-template-columns:minmax(10rem,1.6fr) minmax(4rem,1fr) 6rem 6rem 4.5rem 9rem; }} .layers {{ margin:.3rem 0 .8rem 1.5rem; width:auto; }}
-.tree {{ overflow-x:auto; }} .tree summary,.tree .leaf {{ display:grid; grid-template-columns:1rem minmax(0,2.4fr) minmax(3rem,1fr) 5.5rem 4rem 8.5rem; align-items:center; gap:.5rem; padding:.25rem 0; border-bottom:1px solid #21262d; font-size:.9rem; }} .tree .leaf {{ grid-template-columns:minmax(0,2.4fr) minmax(3rem,1fr) 5.5rem 4rem 8.5rem; padding-left:1rem; }} .tree details > details,.tree details > .leaf {{ margin-left:1.2rem; }} .tree .name {{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.82rem; }} .tree [data-depth="0"] > summary .name,.tree [data-depth="1"] > summary .name {{ font-family:inherit; font-size:.9rem; font-weight:600; }} .meter {{ height:8px; border-radius:4px; background:linear-gradient(90deg,var(--accent) var(--share),#21262d var(--share)); }}
-</style></head><body><main>
-<h1>NextTransformer profile</h1><p class="muted">Status: <code>{status}</code>. Warmup is separated from steady-state measurements.</p>
-{warning}
-{_findings_html(summary)}
-<h2>Steady state</h2>{_shape_html(summary)}<div class="grid">
-<div class="card"><span class="muted">Median step</span><span class="value">{_number(steady.get('median_step_seconds', 0), 3)} s</span></div>
-<div class="card"><span class="muted">Throughput</span><span class="value">{_number(steady.get('median_tokens_per_second', 0), 0)} tok/s</span></div>
-<div class="card"><span class="muted">Optimizer time</span><span class="value">{_number(steady.get('optimizer_seconds_total', 0), 3)} s</span></div>
-<div class="card"><span class="muted">Data time</span><span class="value">{_number(steady.get('data_seconds_total', 0), 3)} s</span></div>
-<div class="card"><span class="muted">Peak memory</span><span class="value">{_memory_gib(steady.get('peak_memory_bytes', 0))}</span></div>
-</div>
-{_mfu_html(summary)}
-{_projection_html(summary)}
-{_stages_html(summary)}
-{_memory_html(summary)}
-{_wall_html(summary)}
-{_trace_html(summary)}
-{_heatmap_html(summary)}
-<h2>Warmup</h2><p>{warmup.get('steps', 0)} step(s): {', '.join(f'{v:,.3f}s' for v in warmup.get('step_seconds', [])) or 'none'}</p>
-<h2>GPU telemetry</h2><p class="muted">{_text(scope)}</p>{_telemetry_table(telemetry)}
-<p class="muted">A static research report generated from <code>summary.json</code>. Open a PyTorch trace in Perfetto or the Nsight report in Nsight Systems for full timelines.</p>
-</main></body></html>
+    offsets = payload["offsets"]
+    columns = "".join(f'<th scope="col" data-time-header="{index}">{offset:,.0f}</th>' if index % 8 == 0 else
+                      f'<th scope="col" data-time-header="{index}"></th>' for index, offset in enumerate(offsets))
+    body = []
+    for row in payload["rows"]:
+        marker = ' <span class="low-flag" title="Low utilization">Low</span>' if row["low"] else ""
+        cells = []
+        for cell in row["cells"]:
+            attributes = [f'data-gpu-row="{row["gpu"]}"', f'data-time-bucket="{cell["bucket"]}"']
+            for metric in ("gpu_util", "memory_used_pct", "power", "wait_idle_ratio"):
+                if cell.get(metric) is not None:
+                    attributes.append(f'data-{metric}="{cell[metric]:.6f}"')
+            value = cell.get("gpu_util")
+            fill = "" if value is None else f' style="--cell-value:{max(0.0, min(100.0, value)):.3f}"'
+            title = "unavailable" if value is None else f"{value:.1f}%"
+            cells.append(f'<td class="heat-cell" {" ".join(attributes)}{fill} title="{title}"></td>')
+        body.append(f'<tr><th scope="row">GPU {row["gpu"]}{marker}</th>{"".join(cells)}</tr>')
+    telemetry = summary.get("telemetry_summary", {}).get("per_gpu", [])
+    lagging = _lagging(telemetry)
+    table = [[f'GPU {row.get("index", "?")}' + (" (low utilization)" if int(row.get("index", 0)) in lagging else ""),
+              f'{row.get("gpu_util_mean_pct", 0):,.1f}%', f'{row.get("memory_used_peak_mib", 0):,.0f} MiB',
+              f'{row.get("power_mean_w", 0):,.1f} W', f'{row.get("sm_clock_mean_mhz", 0):,.0f} MHz'] for row in telemetry]
+    scope = ("steady updates" if summary.get("telemetry_summary", {}).get("per_gpu_scope") == "steady" else "the whole profile")
+    body_html = (
+        f'<div class="heatmap-tools"><label class="metric-switch">Show <select id="heatmap-metric">'
+        f'<option value="gpu_util">GPU utilization</option><option value="memory_used_pct">Memory used %</option>'
+        f'<option value="power">Power</option><option value="wait_idle_ratio">Idle ratio</option></select></label>'
+        f'<div class="heatmap-legend" aria-label="Heatmap color scale"><span>Low</span><i></i><span>High</span></div></div>'
+        f'<div class="heatmap-scroll"><table class="heatmap-grid"><thead>{_phase_row(summary, offsets)}'
+        f'<tr><th scope="col">Seconds</th>{columns}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+        + (_legend([(label, PHASE_TONES[phase]) for phase, label in PHASE_LABELS.items() if phase != "core"])
+           if summary.get("telemetry_summary", {}).get("phase_bands") else "")
+        + _table_view(["GPU", "Mean utilization", "Peak memory", "Mean power", "Mean SM clock"], table, numeric=(1, 2, 3, 4),
+                      title=f"Per GPU, over {scope}"))
+    return _section("gpu-heatmap", "GPU telemetry over time",
+                    "Sampled by nvidia-smi on every GPU for the whole profile; the strip on top marks the phase.",
+                    body_html, extra_class="heatmap-panel")
+
+
+# Page -------------------------------------------------------------------------------------------------------------
+
+LIGHT = ("--page:#eef1f5;--surface:#ffffff;--raise:#f5f7fa;--ink:#0f1722;--ink-2:#465263;--ink-3:#6f7b8b;--line:#e2e7ee;"
+         "--use:#2a78d6;--use-2:#86b6ef;--loss:#eb6834;--loss-2:#f19a72;--loss-3:#b8461a;--idle:#b5bdc8;--warn:#fab219;"
+         "--track:#e9eef5;--heat-0:#e6eef9;--heat-1:#184f95;--on-strong:#ffffff;--on-soft:#0f1722")
+DARK = ("color-scheme:dark;--page:#0c1218;--surface:#141b24;--raise:#1a2330;--ink:#edf1f6;--ink-2:#b2bdca;--ink-3:#7e8a99;"
+        "--line:#243040;--use:#3987e5;--use-2:#184f95;--loss:#d95926;--loss-2:#7a3a1f;--loss-3:#f19a72;--idle:#4a5667;"
+        "--warn:#fab219;--track:#1d2733;--heat-0:#1a2431;--heat-1:#5598e7;--on-strong:#ffffff;--on-soft:#edf1f6")
+
+STYLE = (":root{color-scheme:light;" + LIGHT + ";--font:'Avenir Next','Segoe UI Variable Text','Segoe UI',system-ui,"
+         "-apple-system,sans-serif;--mono:'SF Mono','Cascadia Code',ui-monospace,Menlo,monospace}"
+         "@media (prefers-color-scheme:dark){:root:where(:not([data-theme='light'])){" + DARK + "}}"
+         ":root[data-theme='dark']{" + DARK + "}" + """
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font:15px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+a{color:var(--use)} code,.mono{font-family:var(--mono);font-size:.8em} .mono{word-break:break-all}
+.shell{max-width:1160px;margin:0 auto;padding:24px 28px 64px}
+.topbar{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;gap:16px;
+  margin:0 -28px 26px;padding:12px 28px;background:color-mix(in oklab,var(--page) 88%,transparent);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);font-size:.86rem}
+.topbar nav{display:flex;gap:18px;flex-wrap:wrap} .topbar a{color:var(--ink-2);text-decoration:none} .topbar a:hover{color:var(--ink)}
+.topbar a.back{color:var(--ink);font-weight:600}
+.theme{border:1px solid var(--line);background:var(--surface);color:var(--ink-2);border-radius:999px;padding:5px 14px;font:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--use);outline-offset:2px}
+.masthead{margin:8px 0 22px} .masthead h1{font-size:2.3rem;line-height:1.1;font-weight:650;letter-spacing:-.02em;margin:0 0 10px}
+.masthead .headline{font-size:1.15rem;color:var(--ink-2);margin:0 0 16px;max-width:68ch}
+.facts{display:flex;flex-wrap:wrap;gap:4px 26px;margin:0;font-size:.85rem} .facts div{display:flex;gap:8px}
+.facts dt{color:var(--ink-3)} .facts dd{margin:0;color:var(--ink-2)}
+.overview,.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px}
+.overview{padding:22px 24px 14px;margin-bottom:18px} .panel{padding:22px 24px 18px;margin:0 0 18px}
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:20px}
+.tile{padding:0 18px;border-left:1px solid var(--line);display:flex;flex-direction:column;gap:1px;min-width:0}
+.tile:first-child{border-left:0;padding-left:0} .tile-label{font-size:.8rem;color:var(--ink-3)}
+.tile-value{font-size:1.8rem;font-weight:650;letter-spacing:-.015em;white-space:nowrap} .tile-note{font-size:.78rem;color:var(--ink-3)}
+.tiles.small{margin-bottom:6px} .tiles.small .tile-value{font-size:1.3rem}
+.hero-bar{margin:0} .hero-bar figcaption{font-size:.86rem;color:var(--ink-2);margin-bottom:8px}
+.stack{display:flex;gap:2px;width:100%;border-radius:6px;overflow:hidden} .stack-lg{height:44px} .stack-md{height:26px} .stack-sm{height:18px}
+.seg{min-width:2px;display:flex;align-items:center;padding-left:8px;overflow:hidden;cursor:default}
+.seg:hover{filter:brightness(1.1)} .seg-label{font-size:.8rem;font-weight:600;color:var(--on-strong);white-space:nowrap}
+.stack-sm .seg-label{font-size:.7rem}
+.seg.tone-use-2 .seg-label,.seg.tone-loss-2 .seg-label,.seg.tone-idle .seg-label{color:var(--on-soft)}
+.tone-use{background:var(--use);fill:var(--use)} .tone-use-2{background:var(--use-2);fill:var(--use-2)}
+.tone-loss{background:var(--loss);fill:var(--loss)} .tone-loss-2{background:var(--loss-2);fill:var(--loss-2)}
+.tone-loss-3{background:var(--loss-3);fill:var(--loss-3)} .tone-idle{background:var(--idle);fill:var(--idle)} .tone-none{background:transparent}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;list-style:none;padding:0;margin:10px 0 2px;font-size:.8rem;color:var(--ink-2)}
+.legend li{display:flex;align-items:center;gap:7px} .key{display:inline-block;width:11px;height:11px;border-radius:3px;flex:none}
+.panel header{margin-bottom:14px} .panel h2{font-size:1.14rem;font-weight:650;margin:0 0 4px;letter-spacing:-.005em}
+.panel h3{font-size:.9rem;font-weight:600;color:var(--ink-2);margin:20px 0 10px} .lede{color:var(--ink-2);font-size:.88rem;margin:0;max-width:82ch}
+.table-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:.84rem;margin-top:10px} th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--ink-3);font-weight:500} .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.overview td:first-child{white-space:nowrap} .overview td:first-child .key{margin-right:8px;vertical-align:-1px}
+.table-view{margin-top:12px;font-size:.84rem} .table-view>summary{color:var(--ink-2)}
+details>summary{list-style:none;cursor:pointer} details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"";display:inline-block;width:6px;height:6px;border-right:1.5px solid var(--ink-3);
+  border-bottom:1.5px solid var(--ink-3);transform:rotate(-45deg);margin:0 10px 2px 2px;transition:transform .15s}
+details[open]>summary::before{transform:rotate(45deg)}
+.findings{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+.finding{display:grid;grid-template-columns:74px 1fr;gap:12px;align-items:start;padding:12px 14px;border-radius:10px;background:var(--raise)}
+.finding .badge{justify-self:start;font-size:.72rem;font-weight:600;padding:2px 9px;border-radius:999px;background:var(--track);color:var(--ink-2)}
+.finding.warning .badge{background:var(--warn);color:#111a24} .finding b{font-weight:600} .finding p{margin:2px 0 0;color:var(--ink-2);font-size:.86rem}
+.alert{margin-bottom:18px}
+.meters{display:flex;gap:40px;flex-wrap:wrap;margin:4px 0 4px} .meter{margin:0;display:flex;align-items:center;gap:16px}
+.meter svg{width:168px;height:92px;flex:none} .meter-track{fill:none;stroke:var(--track);stroke-width:15;stroke-linecap:round}
+.meter-fill{fill:none;stroke:var(--use);stroke-width:15;stroke-linecap:round} .meter-value{font-size:30px;font-weight:650;fill:var(--ink);text-anchor:middle}
+.meter figcaption{display:flex;flex-direction:column;font-size:.84rem;color:var(--ink-2);max-width:26ch} .meter figcaption b{color:var(--ink);font-size:.95rem}
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:32px}
+.bars{display:grid;gap:7px}
+.bar-row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(0,2fr) 76px minmax(0,1fr);align-items:center;gap:12px;font-size:.84rem;border-radius:4px}
+.split .bar-row{grid-template-columns:minmax(100px,1.1fr) minmax(0,1.6fr) 64px} .split .bar-note{display:none}
+.bar-label{color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .bar-value{text-align:right;font-variant-numeric:tabular-nums}
+.bar-note{color:var(--ink-3);font-size:.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-track{display:flex;gap:2px;height:14px;background:var(--track);border-radius:0 4px 4px 0;overflow:hidden}
+.bar{display:block;height:100%;min-width:0} .bar:last-child{border-radius:0 4px 4px 0}
+.bar-row:hover .bar-label,.bar-row:focus-visible .bar-label{color:var(--ink)}
+.rank-grid{display:grid;gap:4px;font-size:.8rem} .grid-row{display:grid;grid-template-columns:150px minmax(0,1fr) 70px;gap:12px;align-items:center}
+.grid-label{color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap} .grid-note{color:var(--ink-3);font-variant-numeric:tabular-nums;text-align:right}
+.grid-cells{display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));gap:2px} .grid-row.head .grid-cells span{text-align:center;color:var(--ink-3);font-size:.72rem}
+.cell{height:16px;border-radius:3px;background:color-mix(in oklab,var(--heat-1) calc(var(--v) * 100%),var(--heat-0))} .cell.empty{background:transparent;outline:1px solid var(--line);outline-offset:-1px}
+.layers .grid-row{grid-template-columns:190px minmax(0,1fr) 0}
+.gpu-row{display:grid;grid-template-columns:64px minmax(0,1fr);gap:12px;align-items:center;margin-bottom:6px;font-size:.84rem}
+.timeline{display:block;width:100%;height:auto} .timeline .grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+.timeline .area.tone-use{opacity:.9} .timeline .area.tone-loss{opacity:.8}
+.timeline text{font-size:12px;fill:var(--ink-3)} .crosshair{stroke:var(--ink);stroke-width:1;opacity:0;vector-effect:non-scaling-stroke}
+.window{margin:4px 0 14px} .window>summary{font-weight:600;margin-bottom:8px;font-size:.92rem}
+.window>summary span{font-weight:400;color:var(--ink-3);margin-left:10px;font-size:.84rem}
+.readout{font-size:.8rem;color:var(--ink-2);min-height:1.3em;margin:0 0 0 6.6%;font-variant-numeric:tabular-nums}
+.tree{font-size:.83rem;overflow-x:auto}
+.tree-head,.tree summary,.tree .leaf{display:grid;grid-template-columns:minmax(180px,2.4fr) minmax(60px,1fr) 76px 56px 78px;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)}
+.tree-head{color:var(--ink-3);font-size:.76rem;padding-left:18px} .tree .leaf{padding-left:18px}
+.tree details>details,.tree details>.leaf{margin-left:18px}
+.tree .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree [data-depth="2"] .name,.tree [data-depth="3"] .name{font-family:var(--mono);font-size:.76rem}
+.tree [data-depth="0"]>summary .name{font-weight:600} .tree .bar-track{height:8px} .muted{color:var(--ink-3)}
+.big-number{font-size:2.5rem;font-weight:650;margin:0 0 12px;letter-spacing:-.02em} .big-number span{font-size:.95rem;font-weight:400;color:var(--ink-2);margin-left:12px;letter-spacing:0}
+.heatmap-tools{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:10px;font-size:.84rem;color:var(--ink-2)}
+.metric-switch select{margin-left:6px;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit}
+.heatmap-legend{display:flex;align-items:center;gap:8px} .heatmap-legend i{width:120px;height:10px;border-radius:5px;background:linear-gradient(90deg,var(--heat-0),var(--heat-1))}
+.heatmap-scroll{overflow-x:auto} .heatmap-grid{border-collapse:separate;border-spacing:2px;min-width:max-content;margin:0}
+.heatmap-grid th,.heatmap-grid td{border:0;padding:0} .heatmap-grid thead th{font-size:.7rem;color:var(--ink-3);font-weight:400;text-align:left;height:16px}
+.heatmap-grid tbody th{font-size:.78rem;color:var(--ink-2);font-weight:400;padding-right:10px;white-space:nowrap}
+.heat-cell{width:11px;height:20px;border-radius:2px;background:color-mix(in oklab,var(--heat-1) calc(var(--cell-value,0) * 1%),var(--heat-0))}
+.heat-cell:not([style]){background:transparent;outline:1px solid var(--line);outline-offset:-1px} .phase-cell{height:6px;border-radius:2px}
+.low-flag{font-size:.68rem;padding:0 6px;border-radius:999px;background:var(--warn);color:#111a24;margin-left:4px}
+.plain{padding-left:18px;margin:8px 0;color:var(--ink-2)}
+.compare{display:grid;gap:12px} .compare-row{display:grid;grid-template-columns:180px minmax(0,1fr) 70px;gap:14px;align-items:center;font-size:.86rem}
+.compare-row a{font-weight:600;text-decoration:none;color:var(--ink)} .compare-row a:hover{color:var(--use)}
+.compare-row .num{color:var(--ink-2)} .index-table td:first-child a{font-weight:600;text-decoration:none}
+.footer{color:var(--ink-3);font-size:.78rem;margin-top:28px}
+@media (max-width:860px){.shell{padding:18px 16px 48px}.topbar{margin:0 -16px 20px;padding:10px 16px}.topbar nav{display:none}
+  .tiles{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 0}.tile:nth-child(3){border-left:0;padding-left:0}
+  .split{grid-template-columns:minmax(0,1fr)}.bar-row{grid-template-columns:100px minmax(0,1fr) 64px}.bar-note{display:none}
+  .grid-row{grid-template-columns:96px minmax(0,1fr) 56px}.compare-row{grid-template-columns:minmax(0,1fr);gap:4px}
+  .finding{grid-template-columns:1fr}.masthead h1{font-size:1.8rem}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media print{.topbar{position:static}.theme{display:none}.panel,.overview{break-inside:avoid}}
+""")
+
+SCRIPT = """
+(() => {
+  const root = document.documentElement, button = document.querySelector('.theme');
+  let stored = null; try { stored = localStorage.getItem('nt-profile-theme'); } catch (error) {}
+  if (stored) root.dataset.theme = stored;
+  const dark = () => root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  const label = () => { if (button) button.textContent = dark() ? 'Light theme' : 'Dark theme'; };
+  if (button) button.addEventListener('click', () => { root.dataset.theme = dark() ? 'light' : 'dark';
+    try { localStorage.setItem('nt-profile-theme', root.dataset.theme); } catch (error) {} label(); });
+  label();
+  const select = document.getElementById('heatmap-metric');
+  if (select) {
+    const cells = [...document.querySelectorAll('#gpu-heatmap .heat-cell')];
+    const update = () => {
+      const metric = select.value, name = select.selectedOptions[0].textContent;
+      const values = cells.map(cell => Number(cell.dataset[metric])).filter(Number.isFinite);
+      const low = values.length ? Math.min(...values) : 0, high = values.length ? Math.max(...values) : 1;
+      cells.forEach(cell => { const value = Number(cell.dataset[metric]);
+        if (!Number.isFinite(value)) { cell.style.removeProperty('--cell-value'); cell.title = 'unavailable'; return; }
+        cell.style.setProperty('--cell-value', String(high === low ? 50 : (value - low) / (high - low) * 100));
+        cell.title = value.toFixed(1) + ' \\u00b7 ' + name; });
+    };
+    select.addEventListener('change', update); update();
+  }
+  const format = seconds => seconds >= 1 ? seconds.toFixed(3) + ' s' : (seconds * 1e3).toFixed(1) + ' ms';
+  document.querySelectorAll('.window').forEach(block => {
+    const svg = block.querySelector('svg.timeline'), line = svg && svg.querySelector('.crosshair'), out = block.querySelector('.readout');
+    if (!svg) return;
+    const start = Number(block.dataset.start), seconds = Number(block.dataset.seconds);
+    svg.addEventListener('pointermove', event => {
+      const box = svg.getBoundingClientRect(), x = (event.clientX - box.left) / box.width * 1078 - 72;
+      if (x < 0 || x > 1000) { line.style.opacity = 0; return; }
+      line.setAttribute('x1', x); line.setAttribute('x2', x); line.style.opacity = 0.6;
+      const near = [...svg.querySelectorAll('rect')].filter(rect => { const left = Number(rect.getAttribute('x'));
+        return left <= x && x <= left + Number(rect.getAttribute('width')); });
+      out.textContent = format(start + x / 1000 * seconds) + near.map(rect => '  \\u00b7  ' + rect.querySelector('title').textContent).join('');
+    });
+    svg.addEventListener('pointerleave', () => { line.style.opacity = 0; out.textContent = ''; });
+  });
+})();
 """
 
+NAV = (("findings", "Findings"), ("mfu", "MFU"), ("stages", "Stages"), ("timeline", "Timeline"),
+       ("communication", "Communication"), ("components", "Components"), ("kernel-tree", "Kernels"), ("gpu-heatmap", "Telemetry"))
 
-def write_report(summary_path: Path, output_path: Path) -> None:
+
+def _page(title, body, nav="", back=None):
+    links = (f'<a class="back" href="{_text(back)}">All profiles</a>' if back else "") + nav
+    return (f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{_text(title)}</title><style>{STYLE}</style></head><body><div class="shell">'
+            f'<div class="topbar"><nav>{links}</nav><button class="theme" type="button">Dark theme</button></div><main>{body}</main>'
+            f'<p class="footer">Static research report generated from summary.json. Open a PyTorch trace in Perfetto or an Nsight '
+            f'report in Nsight Systems to see every kernel.</p></div><script>{SCRIPT}</script></body></html>\n')
+
+
+def render_report(summary: dict, back: str | None = None) -> str:
+    """One profile as a self-contained HTML page."""
+    trace = summary.get("trace_summary")
+    low = _heatmap_payload(summary)["low_gpu"]
+    if any(finding.get("id") == "lagging-gpu" for finding in summary.get("findings") or []):
+        low = []
+    scope = "steady" if summary.get("telemetry_summary", {}).get("per_gpu_scope") == "steady" else "captured"
+    warning = (f'<div class="finding warning alert"><span class="badge">Warning</span><div><b>Low utilization</b><p>GPU '
+               f'{", GPU ".join(map(str, low))} averaged under half the median GPU utilization during the {scope} interval.</p></div></div>'
+               if low else "")
+    nav = "".join(f'<a href="#{identifier}">{label}</a>' for identifier, label in NAV)
+    body = (f'<header class="masthead"><h1>{_text(_title(summary))}</h1><p class="headline">{_text(_headline(summary))}</p>'
+            f'{_identity(summary)}</header>{warning}{_overview(summary)}{_findings(summary)}{_mfu(summary)}{_projection(summary)}'
+            f'{_stages(summary)}{_timeline(trace)}{_activity(trace)}{_communication(trace)}{_scheduling(trace)}'
+            f'{_components(trace)}{_kernels(summary)}{_memory(summary)}{_wall(summary)}{_heatmap(summary)}')
+    return _page(f"{_title(summary)} profile", body, nav=nav, back=back)
+
+
+def write_report(summary_path: Path, output_path: Path, back: str | None = None) -> None:
     """Render summary JSON to an HTML file."""
-    output_path.write_text(render_report(json.loads(summary_path.read_text())))
+    Path(output_path).write_text(render_report(json.loads(Path(summary_path).read_text()), back=back))
+
+
+# Index ------------------------------------------------------------------------------------------------------------
+
+def render_index(entries: list[tuple[str, dict]]) -> str:
+    """Compare profiles on one page; ``entries`` are ``(link to the profile page, summary)``."""
+    rows, bars = [], []
+    longest = max(((summary.get("mfu_summary") or {}).get("traced_window_s") or 0 for _, summary in entries), default=0) or 1.0
+    for link, summary in entries:
+        steady = (summary.get("metrics_summary") or {}).get("steady") or {}
+        mfu = summary.get("mfu_summary") or {}
+        projection = summary.get("projection") or {}
+        shape = summary.get("shape") or {}
+        name = _title(summary)
+        attention = (summary.get("software") or {}).get("native_attention")
+        detail = ", ".join(part for part in (f'mb{shape["micro_batch"]} × {shape["accumulation"]}' if shape else "",
+                                             f"{attention} attention" if attention else "") if part)
+        rows.append([f'<a href="{_text(link)}">{_text(name)}</a><br><span class="muted">{_text(detail)}</span>',
+                     _seconds(steady.get("median_step_seconds")), _compact(steady.get("median_tokens_per_second") or 0),
+                     _percent(mfu.get("mfu")),
+                     f'{projection["estimated_hours"]:,.0f} h' if projection.get("estimated_hours") else "—"])
+        waterfall = mfu.get("waterfall") or []
+        if waterfall:
+            window = mfu.get("traced_window_s") or sum(max(row["seconds"], 0) for row in waterfall)
+            parts = [(row["part"], WATERFALL_PARTS.get(row["part"], row["part"]), max(row["seconds"], 0),
+                      WATERFALL_TONES.get(row["part"], "loss")) for row in waterfall]
+            bars.append(f'<div class="compare-row"><a href="{_text(link)}">{_text(name)}<br><span class="muted">{_text(detail)}</span></a>'
+                        f'<div style="width:{100 * window / longest:.2f}%">{_segments(parts, label_min=0.12)}</div>'
+                        f'<span class="num">{_seconds(window)}</span></div>')
+    legend = _legend([(WATERFALL_PARTS[part], tone) for part, tone in WATERFALL_TONES.items() if part != "matrix kernels below peak"])
+    body = (f'<header class="masthead"><h1>Training profiles</h1><p class="headline">{len(entries)} profiles, each at the update '
+            f'shape it ran. The bars share one time scale, so their lengths compare update times.</p></header>'
+            + (f'<section class="panel" id="compare"><header><h2>Where each update goes</h2><p class="lede">The traced update on '
+               f'rank 0, split into model FLOPs at peak (blue) and the time lost beyond them.</p></header>'
+               f'<div class="compare">{"".join(bars)}</div>{legend}</section>' if bars else "")
+            + f'<section class="panel" id="profiles"><header><h2>Profiles</h2></header><div class="index-table table-scroll">'
+            f'{_table(["Profile", "Update", "Tokens/s", "MFU", "Formal run"], rows, numeric=(1, 2, 3, 4))}</div></section>')
+    return _page("Training profiles", body)
+
+
+def write_site(summaries: list[Path], output: Path) -> list[Path]:
+    """Write one page per summary under ``output`` and an index linking them; returns the pages written."""
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    entries, pages = [], []
+    for summary_path in summaries:
+        summary = json.loads(Path(summary_path).read_text())
+        slug = Path(summary_path).resolve().parent.name or _title(summary)
+        page = output / f"{slug}.html"
+        page.write_text(render_report(summary, back="index.html"))
+        entries.append((page.name, summary))
+        pages.append(page)
+    (output / "index.html").write_text(render_index(entries))
+    return [output / "index.html", *pages]
+
+
+def main(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser(description="Render profile summaries as one page each plus a comparison index.")
+    parser.add_argument("summaries", type=Path, nargs="+", help="summary.json files of profile directories")
+    parser.add_argument("--output", type=Path, required=True, help="directory for index.html and the profile pages")
+    args = parser.parse_args(argv)
+    for page in write_site(args.summaries, args.output):
+        print(page)
+
+
+if __name__ == "__main__":
+    main()

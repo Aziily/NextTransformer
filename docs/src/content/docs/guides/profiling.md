@@ -45,7 +45,16 @@ Traced updates run after the steady ones, so tracing overhead never enters the m
 
 ## Read the report
 
-Open `report.html` in a browser. It needs no server or network. Sections, top to bottom:
+Open `report.html` in a browser. It needs no server or network, follows the system's light or dark theme (the
+button at the top switches it), and draws its charts in two hues: blue for time spent on model FLOPs, orange for time
+lost beyond them. Every chart has a table view. To compare profiles, render them as one site with a page per profile
+and an index that puts their updates on one time scale:
+
+```bash
+python -m launch.profile_report runs/profile-a/summary.json runs/profile-b/summary.json --output runs/profiles-site
+```
+
+Sections of a profile page, top to bottom:
 
 - **What to look at first** lists findings with the evidence behind each: an update shape that differs from formal
   training, communication not hidden behind compute, idle GPUs, data stalls, ranks that disagree on a stage, many tiny

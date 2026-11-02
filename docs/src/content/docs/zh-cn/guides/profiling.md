@@ -39,7 +39,13 @@ python launch/profile_train.py \
 
 ## 阅读报告
 
-用浏览器打开 `report.html`，不需要服务器或网络。各部分从上到下依次是：
+用浏览器打开 `report.html`，不需要服务器或网络。页面跟随系统的浅色或深色主题（顶部按钮可切换），图表只用两种色相：蓝色表示花在模型 FLOPs 上的时间，橙色表示超出这部分的损失。每张图都有表格视图。要比较多次剖析，可以把它们渲染成一个站点：每次剖析一个页面，再加一个索引页，在同一时间刻度上对比它们的更新：
+
+```bash
+python -m launch.profile_report runs/profile-a/summary.json runs/profile-b/summary.json --output runs/profiles-site
+```
+
+剖析页面的各部分从上到下依次是：
 
 - **What to look at first** 列出发现及其依据：更新形状与正式训练不同、通信没有被计算掩盖、GPU 空闲、数据卡顿、各 rank 在同一阶段耗时不一致、大量极短内核、部分 GPU 利用率偏低、显存接近占满。
 - **Model FLOPs utilization** 用一次更新的审计 FLOPs（配置的成本证明，即训练器计费的 FLOPs）除以 GPU 的稠密 BF16 tensor 峰值。峰值由架构、SM 数和频率推算，可用 `--peak-tflops` 覆盖。报告给出整次更新以及前向、反向、优化器各自的 MFU，并分别按规格频率和实际运行频率计算。有 trace 时，还会给出矩阵和 attention kernel 的实际速率，以及一张“MFU 损失瀑布图”：矩阵 kernel 低于峰值、其他计算 kernel（逐元素、归一化、类型转换）、未掩盖的通信、未掩盖的内存拷贝、空闲。

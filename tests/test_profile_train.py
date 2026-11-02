@@ -166,7 +166,7 @@ def test_render_report_is_static_and_human_readable():
         ]},
     })
     assert "<!doctype html>" in html.lower()
-    assert "11,184" in html
+    assert "11.2k tok/s" in html
     assert "GPU 0" in html
     assert "low utilization" in html.lower()
     assert "http" not in html
@@ -275,15 +275,15 @@ def test_render_report_shows_findings_stage_waterfall_and_drilldown_tree():
 
     assert 'id="findings"' in html and "Update shape differs" in html
     assert "&lt;now&gt;" in html and "<now>" not in html
-    assert 'id="stages"' in html and 'data-stage="backward"' in html
+    assert 'id="stages"' in html and "Backward" in html and 'class="rank-grid"' in html
     assert "50.0%" in html
-    assert 'id="wall-time"' in html and 'data-phase="checkpoint"' in html
+    assert 'id="wall-time"' in html and 'data-part="checkpoint"' in html
     assert 'id="gpu-activity"' in html and "Exposed communication" in html
     assert 'id="kernel-tree"' in html
     assert html.count("<details") >= 3
     assert "AddmmBackward0 [8, 32]" in html
-    assert "ampere_bf16_s16816gemm&lt;script&gt;" in html and "<script>" not in html.split("<body>")[1].split(
-        '<script type="application/json"')[0]
+    content = html.split("<body>")[1].rsplit("<script>", 1)[0]
+    assert "ampere_bf16_s16816gemm&lt;script&gt;" in content and "<script>" not in content
     assert 'id="top-kernels"' in html and "ncclDevKernel_AllReduce_Sum_f32_RING_LL" in html
     assert "16,384 tokens per update" in html
     assert "native attention sdpa" in render_report(dict(full_summary(), software={"native_attention": "sdpa"}))
@@ -433,5 +433,40 @@ def test_render_report_shows_communication_scheduling_matrices_components_memory
     assert 'id="matrix-shapes"' in html and "2048×1536 · 1536×1536" in html and "43.3" in html
     assert 'id="components"' in html and "attn" in html and "layer 0" in html
     assert 'id="memory"' in html and "20.00 GiB" in html and "4.00 GiB" in html
-    assert 'id="timeline"' in html and html.count('class="lane"') == 4
+    assert 'id="timeline"' in html and html.count('class="timeline"') == 1
+    assert html.count('data-lane="stage"') == 2 and 'class="area tone-use"' not in html
     assert 'data-lane="communication" data-label="all_reduce"' in html
+
+
+def test_render_report_timeline_draws_the_compute_mix():
+    summary = rich_summary()
+    summary["trace_summary"]["timeline"] = [dict(TIMELINE[0], mix=[[0.5, 0.25], [1.0, 0.0], [0.0, 0.0], [0.2, 0.7]])]
+    html = render_report(summary)
+    assert 'class="area tone-use"' in html and 'class="area tone-loss"' in html
+
+
+def test_render_report_has_two_themes_a_hero_bar_and_table_views():
+    html = render_report(rich_summary(), back="index.html")
+    assert "prefers-color-scheme:dark" in html and ":root[data-theme='dark']" in html
+    assert 'class="theme"' in html and 'href="index.html"' in html
+    assert 'id="mfu-loss"' in html and 'class="stack stack-lg"' in html
+    assert html.count('class="table-view"') >= 5
+    assert 'class="meter"' in html
+    assert "https://" not in html and "http://" not in html
+
+
+def test_write_site_writes_one_page_per_profile_and_an_index(tmp_path: Path):
+    from launch.profile_report import write_site
+    paths = []
+    for name, method in (("profile-a", "dense_full"), ("profile-b", "qsa_hybrid")):
+        directory = tmp_path / name
+        directory.mkdir()
+        summary = rich_summary()
+        summary["run"] = {"method": method, "config": f"configs/x/{method}.json", "name": name}
+        (directory / "summary.json").write_text(json.dumps(summary))
+        paths.append(directory / "summary.json")
+    pages = write_site(paths, tmp_path / "site")
+    assert [page.name for page in pages] == ["index.html", "profile-a.html", "profile-b.html"]
+    index = pages[0].read_text()
+    assert 'href="profile-a.html"' in index and "qsa_hybrid" in index and 'class="compare-row"' in index
+    assert "<h1>qsa_hybrid</h1>" in pages[2].read_text()

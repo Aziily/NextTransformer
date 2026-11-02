@@ -181,6 +181,26 @@ def test_torch_trace_maps_forward_and_backward_kernels_to_model_components(tmp_p
     assert outside["forward_s"] == pytest.approx(5e-6) and outside["backward_s"] == 0
 
 
+def test_components_of_a_hybrid_model_are_named_by_mixer_class(tmp_path: Path):
+    trace = tmp_path / "rank_0000.json.gz"
+    events = [
+        X("user_annotation", "nt.stage:forward", 0, 100),
+        X("user_annotation", "nt.module:h.0.attn|LinearMixer", 0, 40),
+        X("user_annotation", "nt.module:h.1.attn|SparseMixer", 50, 40),
+        X("cpu_op", "aten::add", 10, 5),
+        X("cuda_runtime", "cudaLaunchKernel", 11, 1, correlation=1),
+        X("kernel", "void at::native::vectorized_elementwise_kernel<4>()", 20, 10, pid=0, tid=7, correlation=1, device=0),
+        X("cpu_op", "aten::mul", 60, 5),
+        X("cuda_runtime", "cudaLaunchKernel", 61, 1, correlation=2),
+        X("kernel", "void at::native::vectorized_elementwise_kernel<4>()", 70, 20, pid=0, tid=7, correlation=2, device=0),
+    ]
+    with gzip.open(trace, "wt") as handle:
+        json.dump({"traceEvents": events}, handle)
+    names = {row["name"]: row for row in analyze_torch_traces([trace], steps=1)["components"]}
+    assert names["attn (LinearMixer)"]["forward_s"] == pytest.approx(10e-6)
+    assert names["attn (SparseMixer)"]["layers"][0]["layer"] == 1
+
+
 def test_torch_trace_reports_collectives_with_bandwidth_and_exposed_time(tmp_path: Path):
     trace = tmp_path / "rank_0000.json.gz"
     torch_trace(trace)
@@ -236,6 +256,10 @@ def test_torch_trace_builds_timeline_lanes(tmp_path: Path):
                for run in lane)
     tail = windows["update tail"]
     assert tail["start_s"] == pytest.approx(155e-6)
+    mix = update["mix"]
+    assert len(mix) == update["buckets"]
+    assert all(0 <= matrix <= 1 and 0 <= other <= 1 and matrix + other <= 1.0001 for matrix, other in mix)
+    assert sum(matrix for matrix, _ in mix) > sum(other for _, other in mix) > 0
 
 
 def write_nsys_sqlite(path: Path):

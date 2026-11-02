@@ -389,6 +389,15 @@ def _attempt(errors: dict, name: str, function, *args):
         return None
 
 
+def _charged_update(rows: list[dict], token_share: float) -> float | None:
+    """Audited FLOPs the trainer charged for the last update, scaled to a formal update."""
+    train = [row for row in rows if row.get("event") == "train" and "theory_flops" in row]
+    if not train or not token_share:
+        return None
+    previous = train[-2]["theory_flops"] if len(train) > 1 else 0
+    return (train[-1]["theory_flops"] - previous) / token_share
+
+
 def _cost_proof(config: Path) -> dict:
     """The cost proof a configuration's training charges, from its calibration record."""
     path = config if config.is_absolute() else REPO_ROOT / config
@@ -435,6 +444,8 @@ def collect(args: argparse.Namespace, output: Path, exit_code: int, started: flo
                                 * provenance["accumulation"] * provenance["protocol"]["sequence_len"],
                                 model_flops_per_gpu_s=model_flops_rate(rows or [], [s for s in steps if s not in traced],
                                                                        provenance["world_size"]))
+        payload["run"] = dict(method=(provenance.get("model") or {}).get("method"), config=str(args.config),
+                              name=output.name)
         software = provenance.get("software") or {}
         payload["software"] = {key: software[key] for key in ("torch", "cuda", "nccl", "native_attention", "fla_core",
                                                             "sparse_backend") if software.get(key)}
@@ -472,7 +483,7 @@ def collect(args: argparse.Namespace, output: Path, exit_code: int, started: flo
     proof = _attempt(errors, "cost proof", _cost_proof, args.config) if shape else None
     if proof and shape:
         token_share = shape["tokens_per_update"] / provenance["protocol"]["global_batch_tokens"]
-        flops = phase_flops(proof, token_share)
+        flops = phase_flops(proof, token_share, _charged_update(rows or [], token_share))
         payload["mfu_summary"] = _attempt(errors, "mfu", mfu_summary, flops, shape["world"],
                                           steady.get("median_step_seconds"), payload.get("stage_summary") or {},
                                           payload.get("trace_summary"), payload["hardware"]["dense_bf16_flops"],

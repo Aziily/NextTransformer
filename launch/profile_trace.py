@@ -431,11 +431,18 @@ class _Aggregate:
             if instance["component"] is not None and instance["flops"]:
                 self.components[instance["component"]]["flops"][0] += instance["flops"]
         blocks = {name for name in self.module_names if any(other.startswith(name + ".") for other in self.module_names)}
+        # A hybrid model puts different mixers at the same position (``attn``); name those by their class.
+        classes = defaultdict(set)
+        for path in self.components:
+            if path != OUTSIDE and path not in blocks:
+                classes[component_of(path)[0]].add(self.module_classes.get(path))
         rows = {}
         for path, values in self.components.items():
             name, layer = (OUTSIDE, None) if path == OUTSIDE else component_of(path)
             if path in blocks:
                 name = f"{self.module_classes.get(path, name)} (outside its submodules)"
+            elif len(classes.get(name, ())) > 1 and self.module_classes.get(path):
+                name = f"{name} ({self.module_classes[path]})"
             row = rows.setdefault(name, dict(name=name, forward_s=0.0, backward_s=0.0, flops=0, layers={}))
             forward, backward, flops = values["forward"][0], values["backward"][0], values["flops"][0]
             row["forward_s"] += forward * scale
@@ -546,7 +553,22 @@ def _window(name, rows, origin, start, end, buckets=TIMELINE_BUCKETS):
             else:
                 runs.append([index, index + 1, top, intensity])
         lanes[lane] = [[first, last, label_, round(max(intensity, 1e-3), 3)] for first, last, label_, intensity in runs]
-    return dict(name=name, start_s=start - origin, seconds=end - start, buckets=buckets, lanes=lanes)
+    # Busy share of matrix (GEMM, attention) and other compute kernels in each bucket, capped at a full bucket.
+    mix = [[0.0, 0.0] for _ in range(buckets)]
+    for row in rows:
+        if row.kind != "compute" or row.end <= start or row.start >= end:
+            continue
+        low, high = max(row.start, start), min(row.end, end)
+        slot = 0 if row.category in ("gemm", "attention") else 1
+        for index in range(int((low - start) / width), min(int((high - start) / width), buckets - 1) + 1):
+            left = start + index * width
+            mix[index][slot] += max(0.0, min(high, left + width) - max(low, left)) / width
+    for cell in mix:
+        total = cell[0] + cell[1]
+        if total > 1:
+            cell[0], cell[1] = cell[0] / total, cell[1] / total
+    return dict(name=name, start_s=start - origin, seconds=end - start, buckets=buckets, lanes=lanes,
+                mix=[[round(matrix, 3), round(other, 3)] for matrix, other in mix])
 
 
 # PyTorch profiler traces ------------------------------------------------------------------------------------------

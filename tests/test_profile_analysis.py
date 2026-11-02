@@ -161,6 +161,12 @@ def test_phase_flops_splits_the_audited_update_cost():
     assert phase_flops(proof, token_share=0.25) == dict(forward=75.0, backward=150.0, optimizer=100.0, total=325.0,
                                                        matrix=(280 + 560) * 0.25 + 90, attention=(21 + 42) * 0.25)
     assert phase_flops({"stages": [{}, {}]}, token_share=1) is None
+    # A staged method (indexer burn-in, then joint training) uses the stage whose total the trainer charged.
+    staged = {"stages": [dict(proof["stages"][0], stage="burnin", cost=dict(proof["stages"][0]["cost"], total=1100)),
+                         dict(proof["stages"][0], stage="joint")]}
+    assert phase_flops(staged, token_share=1, charged_total=1100)["forward"] == 300
+    assert phase_flops(staged, token_share=1, charged_total=1000)["total"] == 1000
+    assert phase_flops(staged, token_share=1) is None
 
 
 def test_mfu_summary_reports_phases_kernels_and_the_loss_waterfall():
