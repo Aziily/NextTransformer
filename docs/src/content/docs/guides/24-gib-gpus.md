@@ -99,7 +99,7 @@ for every registered configuration except:
 | Methods | Problem | Workaround |
 |---|---|---|
 | kda, kda_no_ve, kda_hybrid, retnet, gdn, gdn_hybrid, gdn_hybrid_swa, deltanet_hybrid, qsa_hybrid | `No module named 'fla'` | Install `requirements/linear.txt` (fla-core 0.5.2); all nine then pass |
-| dsa, moba, moba_hybrid, nsa, qsa, seer with `--sparse-backend kernel` | FlexAttention template needs 114,688 bytes of shared memory; sm86 has 101,376 | Use the default reference backend |
+| dsa, moba, moba_hybrid, nsa, qsa, seer with `--sparse-backend kernel` | FlexAttention template needs 114,688 bytes of shared memory; sm86 has 101,376 | Use the default reference backend. A FlexAttention option `fwd_num_stages=2` fits sm86 (profiled for qsa_hybrid in the joint stage: 20.5 s per formal update, 21.5 GiB peak) but is not exposed by the trainer and is not yet compared with the reference backend |
 | gla, deltanet | Out of memory at micro-batch 1 | Not runnable on 24 GiB without a memory-saving kernel |
 | qsa_hybrid in training (sparse reference backend) | Passes the check at 11.9 GiB, but a micro-batch-1 formal run runs out of memory at update 3 with expandable segments: 22.5 GiB allocated and 0.2 GiB reserved but unused, so the cause is real growth, not fragmentation. The reference indexed attention (FP32 gathers and `scatter_add`) dominates compute; one update takes about 386 s | Not runnable on 24 GiB |
 

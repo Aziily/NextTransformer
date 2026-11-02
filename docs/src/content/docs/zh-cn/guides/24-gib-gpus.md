@@ -92,7 +92,7 @@ loss 误差 5e-7，但在输出头上比 `torch.compile` 慢，并且需要改�
 | 方法 | 问题 | 处理 |
 |---|---|---|
 | kda、kda_no_ve、kda_hybrid、retnet、gdn、gdn_hybrid、gdn_hybrid_swa、deltanet_hybrid、qsa_hybrid | `No module named 'fla'` | 安装 `requirements/linear.txt`（fla-core 0.5.2）后九个全部通过 |
-| dsa、moba、moba_hybrid、nsa、qsa、seer 使用 `--sparse-backend kernel` | FlexAttention 模板需要 114,688 字节共享内存，sm86 只有 101,376 | 使用默认的 reference 后端 |
+| dsa、moba、moba_hybrid、nsa、qsa、seer 使用 `--sparse-backend kernel` | FlexAttention 模板需要 114,688 字节共享内存，sm86 只有 101,376 | 使用默认的 reference 后端。FlexAttention 选项 `fwd_num_stages=2` 可以放进 sm86（对 qsa_hybrid joint 阶段做过 profile：每次正式更新 20.5 s，峰值 21.5 GiB），但训练器还没有暴露这个选项，也尚未与 reference 后端对照 |
 | gla、deltanet | micro-batch 1 显存不足 | 没有省显存的 kernel 时无法在 24 GiB 上运行 |
 | qsa_hybrid 训练（稀疏 reference 后端） | 检查中 11.9 GiB 通过，但 micro-batch 1 正式形状在第 3 次更新显存不足（已开 expandable segments）：已分配 22.5 GiB，已保留未使用仅 0.2 GiB，属于真实增长而非碎片。reference 索引注意力（FP32 gather 和 `scatter_add`）占主要计算；每次更新约 386 s | 无法在 24 GiB 上运行 |
 
