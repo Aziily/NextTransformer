@@ -56,7 +56,7 @@ NVLink 两两相连（0-1、2-3、4-5、6-7），对与对之间走 PCIe，PyTor
 
 | 设置 | 效果 | 说明 |
 |---|---|---|
-| `--micro-batch 2` | 训练吞吐 +11% | 需要 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`；峰值显存 23.4 / 23.6 GiB，不加此设置第 3 次更新会显存不足 |
+| `--micro-batch 2` | 训练吞吐 +11% | 需要 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`（PyTorch 2.9.1 会提示该名称已弃用，但新名 `PYTORCH_ALLOC_CONF` 在 2.9.1 上不会启用 expandable segments）；峰值显存 23.4 / 23.6 GiB，不加此设置第 3 次更新会显存不足 |
 | `--eval-batch 8` | 验证 207 s → 165 s | 行和 token 不变；BPB 差 5e-7 |
 | `NCCL_PROTO=Simple`、`NCCL_ALGO=allreduce:tree` | 无可测变化 | `NCCL_ALGO=Tree` 会失败：NCCL 没有 Tree all-gather |
 | GPU 顺序、`--numa-binding node` | 无变化或更慢 | |
@@ -94,7 +94,7 @@ loss 误差 5e-7，但在输出头上比 `torch.compile` 慢，并且需要改�
 | kda、kda_no_ve、kda_hybrid、retnet、gdn、gdn_hybrid、gdn_hybrid_swa、deltanet_hybrid、qsa_hybrid | `No module named 'fla'` | 安装 `requirements/linear.txt`（fla-core 0.5.2）后九个全部通过 |
 | dsa、moba、moba_hybrid、nsa、qsa、seer 使用 `--sparse-backend kernel` | FlexAttention 模板需要 114,688 字节共享内存，sm86 只有 101,376 | 使用默认的 reference 后端 |
 | gla、deltanet | micro-batch 1 显存不足 | 没有省显存的 kernel 时无法在 24 GiB 上运行 |
-| qsa_hybrid 训练 | 检查中 11.9 GiB 通过，但 micro-batch 1 正式形状在第 3 次更新显存不足（已开 expandable segments）；每次更新约 386 s | 无法在 24 GiB 上运行 |
+| qsa_hybrid 训练（稀疏 reference 后端） | 检查中 11.9 GiB 通过，但 micro-batch 1 正式形状在第 3 次更新显存不足（已开 expandable segments）：已分配 22.5 GiB，已保留未使用仅 0.2 GiB，属于真实增长而非碎片。reference 索引注意力（FP32 gather 和 `scatter_add`）占主要计算；每次更新约 386 s | 无法在 24 GiB 上运行 |
 
 该检查不包含优化器状态和 DDP bucket：`dense_full` 在检查中峰值 9.5 GiB，训练中 17.7 GiB；qsa_hybrid 在检查中 11.9 GiB
 通过，却无法训练。通过该检查不等于能训练；正式运行前先跑一次正式形状的有界冒烟（`--smoke-accumulation 64`，几次更新）。

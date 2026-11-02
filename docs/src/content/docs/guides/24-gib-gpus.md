@@ -59,7 +59,7 @@ An Nsight Systems trace of one micro-batch-1 formal update (16.07 s on the trace
 
 | Setting | Effect | Note |
 |---|---|---|
-| `--micro-batch 2` | +11% training throughput | Needs `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`; peak memory is 23.4 of 23.6 GiB, and without the setting update 3 runs out of memory |
+| `--micro-batch 2` | +11% training throughput | Needs `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (PyTorch 2.9.1 warns that the name is deprecated, but the new `PYTORCH_ALLOC_CONF` does not enable expandable segments there); peak memory is 23.4 of 23.6 GiB, and without the setting update 3 runs out of memory |
 | `--eval-batch 8` | Validation 207 s → 165 s | Same rows and tokens; BPB agrees to 5e-7 |
 | `NCCL_PROTO=Simple`, `NCCL_ALGO=allreduce:tree` | No measurable change | `NCCL_ALGO=Tree` fails: NCCL has no Tree all-gather |
 | GPU order, `--numa-binding node` | No change or slower | |
@@ -101,7 +101,7 @@ for every registered configuration except:
 | kda, kda_no_ve, kda_hybrid, retnet, gdn, gdn_hybrid, gdn_hybrid_swa, deltanet_hybrid, qsa_hybrid | `No module named 'fla'` | Install `requirements/linear.txt` (fla-core 0.5.2); all nine then pass |
 | dsa, moba, moba_hybrid, nsa, qsa, seer with `--sparse-backend kernel` | FlexAttention template needs 114,688 bytes of shared memory; sm86 has 101,376 | Use the default reference backend |
 | gla, deltanet | Out of memory at micro-batch 1 | Not runnable on 24 GiB without a memory-saving kernel |
-| qsa_hybrid in training | Passes the check at 11.9 GiB, but runs out of memory at update 3 of a micro-batch-1 formal run, with expandable segments; one update takes about 386 s | Not runnable on 24 GiB |
+| qsa_hybrid in training (sparse reference backend) | Passes the check at 11.9 GiB, but a micro-batch-1 formal run runs out of memory at update 3 with expandable segments: 22.5 GiB allocated and 0.2 GiB reserved but unused, so the cause is real growth, not fragmentation. The reference indexed attention (FP32 gathers and `scatter_add`) dominates compute; one update takes about 386 s | Not runnable on 24 GiB |
 
 The check holds no optimizer state or DDP buckets: `dense_full` peaks at 9.5 GiB there and at 17.7 GiB in training,
 and qsa_hybrid passes the check at 11.9 GiB but does not train. Passing the check is not evidence that a method trains;
