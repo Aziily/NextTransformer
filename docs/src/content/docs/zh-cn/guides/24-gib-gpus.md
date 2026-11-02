@@ -3,8 +3,8 @@ title: 在 24 GiB GPU 上训练
 description: 八张 24 GiB Ampere GPU 跑一次正式训练的成本、时间去向，以及有效的设置。
 ---
 
-八张 24 GiB Ampere GPU（sm86，BF16、FP32 累加稠密峰值 71 TFLOPS）可以对除两个以外的全部已注册配置跑通全上下文前向和反向（见
-[方法覆盖](#24-gib-ampere-上的方法覆盖)）。以下数字来自 `configs/baseline/dense_full.json` 的有界研究模式运行：单节点，
+八张 24 GiB Ampere GPU（sm86，BF16、FP32 累加稠密峰值 71 TFLOPS）可以对除两个以外的全部已注册配置跑通
+全上下文前向和反向，但至少还有一个无法训练（见[方法覆盖](#24-gib-ampere-上的方法覆盖)）。以下数字来自 `configs/baseline/dense_full.json` 的有界研究模式运行：单节点，
 NVLink 两两相连（0-1、2-3、4-5、6-7），对与对之间走 PCIe，PyTorch 2.9.1、CUDA 12.8、NCCL 2.27.5。它们是估算，不是正式运行。
 
 ## 按正式更新形状测量
@@ -94,6 +94,7 @@ loss 误差 5e-7，但在输出头上比 `torch.compile` 慢，并且需要改�
 | kda、kda_no_ve、kda_hybrid、retnet、gdn、gdn_hybrid、gdn_hybrid_swa、deltanet_hybrid、qsa_hybrid | `No module named 'fla'` | 安装 `requirements/linear.txt`（fla-core 0.5.2）后九个全部通过 |
 | dsa、moba、moba_hybrid、nsa、qsa、seer 使用 `--sparse-backend kernel` | FlexAttention 模板需要 114,688 字节共享内存，sm86 只有 101,376 | 使用默认的 reference 后端 |
 | gla、deltanet | micro-batch 1 显存不足 | 没有省显存的 kernel 时无法在 24 GiB 上运行 |
+| qsa_hybrid 训练 | 检查中 11.9 GiB 通过，但 micro-batch 1 正式形状在第 3 次更新显存不足（已开 expandable segments）；每次更新约 386 s | 无法在 24 GiB 上运行 |
 
-该检查不包含优化器状态和 DDP bucket：`dense_full` 在检查中峰值 9.5 GiB，训练中 17.7 GiB。检查中峰值超过约 14 GiB 的方法
-（elu_linear、elu_norm、elu_qknorm）在正式运行前需要先跑一次有界训练冒烟。
+该检查不包含优化器状态和 DDP bucket：`dense_full` 在检查中峰值 9.5 GiB，训练中 17.7 GiB；qsa_hybrid 在检查中 11.9 GiB
+通过，却无法训练。通过该检查不等于能训练；正式运行前先跑一次正式形状的有界冒烟（`--smoke-accumulation 64`，几次更新）。
