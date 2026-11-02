@@ -27,7 +27,8 @@ if not __package__:
     sys.path.insert(0, str(REPO_ROOT))
 
 from launch.profile_analysis import (diagnose, hardware_peak, memory_summary, mfu_summary, phase_bands, phase_flops,
-                                     project_formal, read_timelines, steady_interval, summarize_stages, wall_accounting)
+                                     project_formal, rank_gantt, read_timelines, steady_interval, summarize_stages,
+                                     wall_accounting)
 from launch.profile_trace import analyze_nsys_sqlite, analyze_torch_traces
 from launch.profile_report import write_report
 
@@ -237,6 +238,9 @@ def _metadata(args: argparse.Namespace, command: list[str], started: float) -> d
         "steady_steps": args.steady_steps,
         "smoke_accumulation": args.smoke_accumulation,
         "trace": args.trace,
+        "overrides": {key: value for key, value in (("sparse_backend", args.sparse_backend),
+                                                    ("sparse_stage", args.sparse_stage if args.sparse_stage != "auto" else None),
+                                                    ("flex_options", args.flex_options)) if value},
         "trace_steps": list(trace_window(args) or ()),
         "environment": {key: os.environ.get(key) for key in env_keys if os.environ.get(key) is not None},
         "git_commit": _command_output(["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"]),
@@ -274,6 +278,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--trace-ranks", type=int, nargs="+", default=[0], help="ranks the torch trace records")
     parser.add_argument("--nsys", action="store_true", help="same as --trace nsys")
     parser.add_argument("--nsys-output", type=Path)
+    parser.add_argument("--sparse-backend", choices=("reference", "kernel"),
+                        help="sparse attention implementation for sparse methods (default: the trainer's)")
+    parser.add_argument("--sparse-stage", choices=("auto", "joint"), default="auto",
+                        help="joint: profile a staged sparse method's joint stage instead of its burn-in")
+    parser.add_argument("--flex-options", type=json.loads,
+                        help="JSON FlexAttention kernel_options for the sparse kernel backend, e.g. '{\"fwd_num_stages\": 2}'")
     parser.add_argument("--peak-tflops", type=float,
                         help="dense BF16 tensor peak per GPU for MFU (default: from the GPU architecture and clock)")
     parser.add_argument("--telemetry-period-ms", type=int, default=200)
@@ -304,6 +314,10 @@ def build_command(args: argparse.Namespace, run_output: Path) -> list[str]:
     window = trace_window(args)
     steps = window[1] if window else args.warmup_steps + args.steady_steps
     hooks = ["--profile-dir", str(args.output / "stages")]
+    if args.sparse_stage != "auto":
+        hooks += ["--profile-sparse-stage", args.sparse_stage]
+    if args.flex_options:
+        hooks += ["--profile-flex-options", json.dumps(args.flex_options, separators=(",", ":"))]
     if window:
         hooks += ["--profile-trace", args.trace, "--profile-trace-steps", str(window[0]), str(window[1])]
         if args.trace == "torch":
@@ -332,6 +346,7 @@ def build_command(args: argparse.Namespace, run_output: Path) -> list[str]:
         str(steps),
         *(["--smoke-accumulation", str(args.smoke_accumulation)] if args.smoke_accumulation else []),
         *(["--smoke-val-tokens", str(args.validation_tokens)] if args.validation_tokens else []),
+        *(["--sparse-backend", args.sparse_backend] if args.sparse_backend else []),
         "--log-every",
         "1",
         # Only the final checkpoint: a rolling checkpoint after every update would dominate the wall time.
@@ -425,6 +440,7 @@ def collect(args: argparse.Namespace, output: Path, exit_code: int, started: flo
     if records:
         payload["stage_summary"] = _attempt(errors, "stages", summarize_stages, records, args.warmup_steps)
         payload["wall_accounting"] = _attempt(errors, "wall", wall_accounting, records[0], args.warmup_steps)
+        payload["rank_gantt"] = _attempt(errors, "gantt", rank_gantt, records, args.warmup_steps)
         interval = steady_interval(records[0], args.warmup_steps)
     if telemetry_path.exists():
         telemetry = _attempt(errors, "telemetry", summarize_telemetry, telemetry_path, started, stopped, interval)
@@ -444,8 +460,10 @@ def collect(args: argparse.Namespace, output: Path, exit_code: int, started: flo
                                 * provenance["accumulation"] * provenance["protocol"]["sequence_len"],
                                 model_flops_per_gpu_s=model_flops_rate(rows or [], [s for s in steps if s not in traced],
                                                                        provenance["world_size"]))
+        overrides = {key: value for key, value in (("sparse_stage", args.sparse_stage if args.sparse_stage != "auto" else None),
+                                                   ("flex_options", args.flex_options)) if value}
         payload["run"] = dict(method=(provenance.get("model") or {}).get("method"), config=str(args.config),
-                              name=output.name)
+                              name=output.name, **({"overrides": overrides} if overrides else {}))
         software = provenance.get("software") or {}
         payload["software"] = {key: software[key] for key in ("torch", "cuda", "nccl", "native_attention", "fla_core",
                                                             "sparse_backend") if software.get(key)}
@@ -483,7 +501,8 @@ def collect(args: argparse.Namespace, output: Path, exit_code: int, started: flo
     proof = _attempt(errors, "cost proof", _cost_proof, args.config) if shape else None
     if proof and shape:
         token_share = shape["tokens_per_update"] / provenance["protocol"]["global_batch_tokens"]
-        flops = phase_flops(proof, token_share, _charged_update(rows or [], token_share))
+        flops = phase_flops(proof, token_share, _charged_update(rows or [], token_share),
+                            stage="joint" if args.sparse_stage == "joint" else None)
         payload["mfu_summary"] = _attempt(errors, "mfu", mfu_summary, flops, shape["world"],
                                           steady.get("median_step_seconds"), payload.get("stage_summary") or {},
                                           payload.get("trace_summary"), payload["hardware"]["dense_bf16_flops"],

@@ -291,10 +291,11 @@ def _finish_tree(nodes, scale, depth=0):
 
 
 class _Activity:
-    __slots__ = ("gpu", "start", "end", "name", "short", "category", "kind", "stage", "launched", "label")
+    __slots__ = ("gpu", "start", "end", "name", "short", "category", "kind", "stage", "launched", "label", "stream")
 
-    def __init__(self, gpu, start, end, name, stage, launched):
+    def __init__(self, gpu, start, end, name, stage, launched, stream=None):
         self.gpu, self.start, self.end, self.name, self.stage, self.launched = gpu, start, end, name, stage, launched
+        self.stream = stream
         self.short, self.category = short_kernel_name(name), classify_kernel(name)
         self.kind = _kind(self.category)
         self.label = self.category
@@ -314,12 +315,14 @@ class _Aggregate:
         self.launch = dict(api_calls=0, kernels=0, memory_ops=0, host_s=0.0, micro_batches=0)
         self.syncs = defaultdict(lambda: [0, 0.0])
         self.timeline = None
+        self.pipeline = None
+        self.host = []
         self.categories = defaultdict(float)
         self.other_operators = defaultdict(lambda: [0, 0.0])
 
     def add(self, gpu, start, end, name, stage, operator=None, launched=None, instance=None, component=None,
-            collective=None):
-        activity = _Activity(gpu, start, end, name, stage, launched)
+            collective=None, stream=None):
+        activity = _Activity(gpu, start, end, name, stage, launched, stream)
         seconds = end - start
         self.activities[gpu].append(activity)
         path = [stage, activity.category] + ([operator] if operator is not None else []) + [activity.short]
@@ -398,7 +401,7 @@ class _Aggregate:
             syncs=sorted((dict(api=api, source=source_, stage=stage, calls=calls * scale, seconds=seconds * scale)
                           for (api, source_, stage), (calls, seconds) in self.syncs.items()),
                          key=lambda row: row["seconds"], reverse=True),
-            idle=self._idle(scale), timeline=self.timeline or [],
+            idle=self._idle(scale), timeline=self.timeline or [], pipeline=self.pipeline or [],
             categories={name: seconds * scale for name, seconds in sorted(self.categories.items(), key=lambda kv: -kv[1])},
             other_operators=sorted((dict(stage=stage, op=op, category=category, calls=calls * scale, seconds=seconds * scale)
                                     for (stage, op, category), (calls, seconds) in self.other_operators.items()),
@@ -522,6 +525,7 @@ class _Aggregate:
             if tail:
                 windows.append(("update tail", min(row.start for row in tail), finish))
         self.timeline = [_window(name, rows, origin, start, end) for name, start, end in windows]
+        self.pipeline = [_pipeline(name, rows, self.host, origin, start, end) for name, start, end in windows]
 
 
 def _window(name, rows, origin, start, end, buckets=TIMELINE_BUCKETS):
@@ -571,6 +575,60 @@ def _window(name, rows, origin, start, end, buckets=TIMELINE_BUCKETS):
                 mix=[[round(matrix, 3), round(other, 3)] for matrix, other in mix])
 
 
+def _runs(intervals, start, end, buckets):
+    """Dominant label and busy share per bucket, merged into ``[first, last, label, intensity]`` runs."""
+    width = (end - start) / buckets if end > start else 1.0
+    cells = [defaultdict(float) for _ in range(buckets)]
+    for low, high, label in intervals:
+        if high <= start or low >= end:
+            continue
+        low, high = max(low, start), min(high, end)
+        for index in range(int((low - start) / width), min(int((high - start) / width), buckets - 1) + 1):
+            left = start + index * width
+            cells[index][label] += max(0.0, min(high, left + width) - max(low, left))
+    runs = []
+    for index, cell in enumerate(cells):
+        if not cell:
+            continue
+        top = max(cell, key=cell.get)
+        intensity = min(1.0, sum(cell.values()) / width)
+        if runs and runs[-1][2] == top and runs[-1][1] == index:
+            span = runs[-1][1] - runs[-1][0]
+            runs[-1][3] = (runs[-1][3] * span + intensity) / (span + 1)
+            runs[-1][1] = index + 1
+        else:
+            runs.append([index, index + 1, top, intensity])
+    return [[first, last, label, round(max(intensity, 1e-3), 3)] for first, last, label, intensity in runs]
+
+
+PIPELINE_STREAMS = 4
+
+
+def _pipeline(name, rows, host, origin, start, end, buckets=TIMELINE_BUCKETS):
+    """Host thread and CUDA streams of one GPU as lanes, plus how far ahead of the GPU the host launches.
+
+    ``host`` holds ``(start, end, label)`` intervals of the launching thread (launch, sync). ``lead`` is, per bucket,
+    the mean time from a kernel's launch to its start: near zero means the GPU waits for the host.
+    """
+    width = (end - start) / buckets if end > start else 1.0
+    lanes = [dict(name="Host thread", runs=_runs(host, start, end, buckets))]
+    busy = defaultdict(float)
+    for row in rows:
+        if row.stream is not None:
+            busy[row.stream] += row.end - row.start
+    for stream in sorted(busy, key=busy.get, reverse=True)[:PIPELINE_STREAMS]:
+        intervals = [(row.start, row.end, row.label if row.kind == "communication" else row.category)
+                     for row in rows if row.stream == stream]
+        lanes.append(dict(name=f"Stream {stream}", runs=_runs(intervals, start, end, buckets)))
+    lead = [[] for _ in range(buckets)]
+    for row in rows:
+        if row.launched is None or row.kind == "communication" or not start <= row.start < end:
+            continue
+        lead[min(int((row.start - start) / width), buckets - 1)].append(max(row.start - row.launched, 0.0))
+    return dict(name=name, start_s=start - origin, seconds=end - start, buckets=buckets, lanes=lanes,
+                lead=[round(sum(values) / len(values), 6) if values else None for values in lead])
+
+
 # PyTorch profiler traces ------------------------------------------------------------------------------------------
 
 _SKIP_OPERATORS = ("##", "ProfilerStep", "Optimizer.", "DistributedDataParallel", STAGE_PREFIX, MODULE_PREFIX)
@@ -610,6 +668,7 @@ def _torch_trace(path, aggregate, timeline):
     stage_rows, module_rows = defaultdict(list), defaultdict(list)
     operators, collectives, matrices, backward_ops = (defaultdict(list) for _ in range(4))
     sequenced, launches, device, syncs = [], {}, [], []
+    host_rows = defaultdict(list)
     for event in events:
         if event.get("ph") != "X":
             continue
@@ -645,8 +704,10 @@ def _torch_trace(path, aggregate, timeline):
             if name in LAUNCH_APIS:
                 aggregate.launch["api_calls"] += 1
                 aggregate.launch["host_s"] += event.get("dur", 0) * 1e-6
+                host_rows[thread].append((start * 1e-6, end * 1e-6, "launch"))
             elif name in SYNC_APIS:
                 syncs.append(event)
+                host_rows[thread].append((start * 1e-6, end * 1e-6, "sync"))
         elif category in ("kernel", "gpu_memcpy", "gpu_memset"):
             device.append(event)
     stages = {pid: _Ranges(rows) for pid, rows in stage_rows.items()}
@@ -705,9 +766,11 @@ def _torch_trace(path, aggregate, timeline):
                               bytes=_message_bytes(name, args), ranks=args.get("Group size"))
         start = event["ts"] * 1e-6
         aggregate.add(args.get("device", event.get("pid")), start, start + event.get("dur", 0) * 1e-6, event["name"], stage,
-                      operator, launched, instance, component, collective)
+                      operator, launched, instance, component, collective, stream=args.get("stream"))
     if timeline and device:
         main = max(stage_rows, key=lambda pid: len(stage_rows[pid])) if stage_rows else None
+        if host_rows:
+            aggregate.host = sorted(host_rows[max(host_rows, key=lambda key: len(host_rows[key]))])
         rows = sorted(stage_rows.get(main, []))
         gpu = device[0].get("args", {}).get("device", device[0].get("pid"))
         aggregate.build_timeline(gpu, [(start * 1e-6, end * 1e-6) for start, end, label in rows if label == "forward"],
@@ -745,13 +808,14 @@ def analyze_nsys_sqlite(path, steps):
                     ranges[tid >> 24].append((start * 1e-9, end * 1e-9, text[len(STAGE_PREFIX):]))
         stages = {process: _Ranges(rows) for process, rows in ranges.items()}
         aggregate, ranks = _Aggregate(), set()
+        host_rows = defaultdict(list)
 
         def stage_at(process, time):
             return stages[process].at(time, "unattributed") if time is not None and process in stages else "unattributed"
 
         first = {}
-        for start, end, gpu, name, launched, process in db.execute(
-                "SELECT k.start, k.end, k.deviceId, s.value, r.start, k.globalPid >> 24 "
+        for start, end, gpu, name, launched, process, stream in db.execute(
+                "SELECT k.start, k.end, k.deviceId, s.value, r.start, k.globalPid >> 24, k.streamId "
                 "FROM CUPTI_ACTIVITY_KIND_KERNEL k LEFT JOIN StringIds s ON s.id = k.demangledName "
                 "LEFT JOIN CUPTI_ACTIVITY_KIND_RUNTIME r ON r.correlationId = k.correlationId "
                 "AND r.globalTid >> 24 = k.globalPid >> 24"):
@@ -764,7 +828,7 @@ def analyze_nsys_sqlite(path, steps):
                 collective = dict(collective=_kernel_collective(name), dtype="?", bytes=None, ranks=None,
                                   kernel=short_kernel_name(name))
             aggregate.add(gpu, start * 1e-9, end * 1e-9, name, stage_at(process, launched), launched=launched,
-                          collective=collective)
+                          collective=collective, stream=stream)
         for table, label in (("CUPTI_ACTIVITY_KIND_MEMCPY", "Memcpy"), ("CUPTI_ACTIVITY_KIND_MEMSET", "Memset")):
             if table not in tables:
                 continue
@@ -784,13 +848,18 @@ def analyze_nsys_sqlite(path, steps):
                 if api in LAUNCH_APIS:
                     aggregate.launch["api_calls"] += 1
                     aggregate.launch["host_s"] += (end - start) * 1e-9
+                    host_rows[tid].append((start * 1e-9, end * 1e-9, "launch"))
                 elif api in SYNC_APIS:
                     aggregate.sync(api, "(not traced)", stage_at(tid >> 24, start * 1e-9), (end - start) * 1e-9)
+                    host_rows[tid].append((start * 1e-9, end * 1e-9, "sync"))
         for process, rows in ranges.items():
             aggregate.launch["micro_batches"] += sum(1 for row in rows if row[2] == "forward")
         if first:
             gpu = min(first)
             rows = sorted(ranges.get(first[gpu], []))
+            threads = [tid for tid in host_rows if tid >> 24 == first[gpu]]
+            if threads:
+                aggregate.host = sorted(host_rows[max(threads, key=lambda tid: len(host_rows[tid]))])
             aggregate.build_timeline(gpu, [row[:2] for row in rows if row[2] == "forward"],
                                      [row[:2] for row in rows if row[2] == "backward"])
     finally:

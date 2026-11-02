@@ -249,3 +249,52 @@ def test_timeline_reads_peak_memory_once_per_update_before_the_next_reset():
     assert record["steps"][1]["memory"] == {"allocated_peak": 10, "reserved_peak": 20}
     assert record["steps"][2]["memory"] == {"allocated_peak": 30, "reserved_peak": 40}
     assert "memory" not in record["steps"][0]
+
+
+class Indexer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.in_burnin = True
+
+
+class Staged(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mixer = Indexer()
+
+    def set_step(self, step):
+        self.mixer.in_burnin = step < 512
+
+
+def test_force_joint_stage_keeps_sparse_mixers_out_of_burn_in():
+    from launch.profile_hooks import force_joint_stage
+
+    model = force_joint_stage(Staged())
+    assert model.mixer.in_burnin is False
+    model.set_step(0)
+    assert model.mixer.in_burnin is False
+
+
+def test_flex_options_are_passed_to_every_call_and_restored():
+    from launch.profile_hooks import patch_flex_options
+
+    calls = []
+    module = types.SimpleNamespace(flex_attention=lambda *args, **kwargs: calls.append(kwargs) or "out",
+                                   _flex_kernel=types.SimpleNamespace(cache_clear=lambda: calls.append("cleared")))
+    original = module.flex_attention
+    restore = patch_flex_options(module, {"fwd_num_stages": 2})
+    assert module.flex_attention(1, 2, 3) == "out"
+    assert module.flex_attention(1, 2, 3, kernel_options={"BLOCK_M": 64}) == "out"
+    assert calls == ["cleared", {"kernel_options": {"fwd_num_stages": 2}},
+                     {"kernel_options": {"fwd_num_stages": 2, "BLOCK_M": 64}}]
+    restore()
+    assert module.flex_attention is original
+
+
+def test_parse_accepts_profiling_overrides():
+    from launch.profile_hooks import _parse
+
+    args, trainer = _parse(["--profile-dir", "x", "--profile-sparse-stage", "joint",
+                            "--profile-flex-options", '{"fwd_num_stages": 2}', "--config", "c.json"])
+    assert args.profile_sparse_stage == "joint" and args.profile_flex_options == {"fwd_num_stages": 2}
+    assert trainer == ["--config", "c.json"]

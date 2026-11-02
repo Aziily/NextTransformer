@@ -153,12 +153,15 @@ def hardware_peak(device, observed_mhz=None, override_tflops=None):
                 basis=f"sm{arch[0]}{arch[1]}: {device['sms']} SMs × {per_clock} FLOP/clock × {clock:.0f} MHz ({source})")
 
 
-def phase_flops(proof, token_share, charged_total=None):
+def phase_flops(proof, token_share, charged_total=None, stage=None):
     """Audited FLOPs of one update split by phase; forward and backward scale with the update's share of the formal
     tokens, the optimizer runs once per update. A proof with several training stages needs ``charged_total``, the
     total the trainer charged for a formal update, to pick the stage that ran; otherwise ``None``."""
+    named = stage
     stages = [stage for stage in proof.get("stages") or [] if "cost" in stage]
-    if len(stages) > 1 and charged_total is not None:
+    if len(stages) > 1 and named is not None:
+        stages = [stage for stage in stages if stage.get("stage") == named]
+    elif len(stages) > 1 and charged_total is not None:
         stages = [min(stages, key=lambda stage: abs(stage["cost"]["total"] - charged_total))]
     if len(stages) != 1:
         return None
@@ -239,6 +242,25 @@ def mfu_summary(flops, world, step_seconds, stages, trace, peak, clock_peak=None
             row["detail"] = sorted(other, key=lambda item: item["seconds"], reverse=True)
     result["traced_window_s"] = mean["window_s"]
     return result
+
+
+def rank_gantt(records, warmup_steps):
+    """Training stages of every rank in the first steady update, on one wall clock that starts at the earliest rank."""
+    if not records:
+        return None
+    target = next((step["step"] for step in _steady(records[0], warmup_steps) if _training_segments(step)), None)
+    if target is None:
+        return None
+    rows = []
+    for record in records:
+        step = next((step for step in record["steps"] if step["step"] == target), None)
+        if step:
+            rows.append((record["rank"], _training_segments(step)))
+    origin = min(segments[0]["start_wall"] for _, segments in rows if segments)
+    end = max(segments[-1]["start_wall"] + segments[-1]["host_s"] for _, segments in rows if segments)
+    return dict(step=target, seconds=end - origin, rows=[
+        dict(rank=rank, segments=[[segment["start_wall"] - origin, segment["host_s"], segment["stage"]] for segment in segments
+                                  if segment["host_s"] > 0]) for rank, segments in sorted(rows)])
 
 
 def memory_summary(records, warmup_steps, total_bytes):

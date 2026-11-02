@@ -37,6 +37,9 @@ training. Only the final update writes a checkpoint.
 | `--steady-steps` | Updates whose time and throughput the report measures |
 | `--trace torch` | Traces `--trace-steps` extra updates after the steady ones with the PyTorch profiler on `--trace-ranks` (rank 0 by default): stages, operators with input shapes, and kernels |
 | `--trace nsys` | Traces the same updates with Nsight Systems on every rank: stages and kernels per GPU (`--nsys` is an alias) |
+| `--sparse-backend kernel` | Profile a sparse method with its kernel backend instead of the reference path |
+| `--sparse-stage joint` | Profile a staged sparse method's joint stage from the first update instead of its burn-in; research only |
+| `--flex-options` | JSON FlexAttention kernel options for the sparse kernel backend, for example `'{"fwd_num_stages": 2}'` where the default configuration needs more shared memory than the GPU has |
 | `--peak-tflops` | Dense BF16 peak per GPU for MFU, when the architecture table does not cover the GPU |
 | `--smoke-accumulation` | Micro-batches per update (default: the formal update) |
 | `--validation-tokens` | Tokens of each smoke validation (default: one batch). Set it to 41943040, the formal size, to include validation in the formal run estimate |
@@ -79,6 +82,11 @@ Sections of a profile page, top to bottom:
   behind compute, and algorithm and bus bandwidth (as nccl-tests reports them).
 - **Scheduling and synchronization** counts kernels per update and micro-batch, host time spent launching them, and
   calls that block the host; GPU idle time is split into a late host, launch latency and waiting on a dependency.
+- **Ranks over one update** is a Gantt chart of every rank's stages in one steady update on a shared wall clock;
+  the rank whose bars end last is the one the others wait for.
+- **Host and stream pipeline** puts the launching host thread and the busiest CUDA streams on one time axis, with
+  the launch lead: how long a kernel waits in the queue after the host launches it. A lead near zero means the GPU
+  waits for the host.
 - **Timeline** draws stage, compute, communication and memory lanes for the traced update, its middle micro-batch
   and the tail from the last backward through the optimizer.
 - **Model components** splits forward and backward GPU time by model part (attention, MLP, embeddings, head, and

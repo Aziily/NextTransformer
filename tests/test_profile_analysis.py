@@ -238,3 +238,30 @@ def test_diagnose_prices_a_per_micro_batch_host_sync_by_the_idle_it_causes():
     sync = next(finding for finding in findings if finding["id"] == "host-sync")
     assert sync["severity"] == "info"
     assert "0.21 s" in sync["detail"] and "aten::to" in sync["detail"]
+
+
+def test_phase_flops_uses_a_named_stage_when_the_profile_forced_one():
+    proof = {"stages": [
+        {"stage": "burnin", "cost": {"phases": {"forward": 900, "backward": 900, "optimizer": 10}, "total": 1810}},
+        {"stage": "joint", "cost": {"phases": {"forward": 300, "backward": 600, "optimizer": 10}, "total": 910}}]}
+    assert phase_flops(proof, token_share=1, charged_total=1810, stage="joint")["forward"] == 300
+
+
+def test_rank_gantt_aligns_every_rank_on_one_wall_clock():
+    from launch.profile_analysis import rank_gantt
+
+    records = []
+    for rank, offset in ((0, 0.0), (1, 0.5)):
+        steady = {"step": 2, "profiled": False, "segments": [
+            segment("step_setup", 0.1, 0.1, 100.0 + offset), segment("forward", 1.0, 1.0, 100.1 + offset),
+            segment("backward", 2.0, 2.0, 101.1 + offset), segment("optimizer.gather", 0.5, 0.5, 103.1 + offset),
+            segment("validation", 5.0, 5.0, 103.6 + offset)]}
+        records.append({"rank": rank, "steps": [{"step": 0, "profiled": False, "segments": []},
+                                                {"step": 1, "profiled": False, "segments": []}, steady]})
+    gantt = rank_gantt(records, warmup_steps=1)
+    assert gantt["step"] == 2
+    assert gantt["seconds"] == pytest.approx(4.1)
+    assert [row["rank"] for row in gantt["rows"]] == [0, 1]
+    assert gantt["rows"][1]["segments"][0] == pytest.approx([0.5, 0.1, "step_setup"])
+    assert [part[2] for part in gantt["rows"][0]["segments"]] == ["step_setup", "forward", "backward", "optimizer.gather"]
+    assert rank_gantt([], warmup_steps=1) is None

@@ -386,6 +386,106 @@ def _stages(summary):
                                               table, numeric=(1, 2, 3, 4, 5)))
 
 
+def _axis(seconds, offset=0.0, width=1000, y=0, anchor_ends=True):
+    """Five time ticks along an SVG axis of ``width`` user units."""
+    ticks = []
+    for fraction in (0, 0.25, 0.5, 0.75, 1):
+        anchor = ("start" if fraction == 0 else "end" if fraction == 1 else "middle") if anchor_ends else "middle"
+        ticks.append(f'<line class="grid" x1="{fraction * width:.1f}" x2="{fraction * width:.1f}" y1="0" y2="{y - 14}"/>'
+                     f'<text class="tick" x="{fraction * width:.1f}" y="{y}" text-anchor="{anchor}">'
+                     f'{_text(_seconds(offset + fraction * seconds))}</text>')
+    return "".join(ticks)
+
+
+def _gantt(summary):
+    """Every rank's stages in one steady update on a shared wall clock."""
+    gantt = summary.get("rank_gantt")
+    if not gantt or not gantt.get("rows"):
+        return ""
+    total = gantt["seconds"] or 1.0
+    row_height, gap, label = 18, 6, 64
+    rows = gantt["rows"]
+    height = len(rows) * (row_height + gap)
+    bars = []
+    for index, row in enumerate(rows):
+        y = index * (row_height + gap)
+        rank = f"rank {row['rank']}"
+        cells = "".join(
+            f'<rect class="tone-{_stage_tone(stage)}" data-stage="{_text(stage)}" x="{1000 * start / total:.2f}" y="{y}" '
+            f'width="{max(1000 * duration / total - 1, 0.6):.2f}" height="{row_height}" rx="3">'
+            f'<title>{_tip(_seconds(duration), _stage(stage), rank, "starts at " + _seconds(start))}</title></rect>'
+            for start, duration, stage in row["segments"])
+        bars.append(f'<g class="gantt-row"><text class="lane-name" x="-12" y="{y + 13}" text-anchor="end">rank {row["rank"]}</text>'
+                    f'{cells}</g>')
+    svg = (f'<svg class="gantt" viewBox="-{label} -6 {1000 + label + 8} {height + 30}" role="img" '
+           f'aria-label="Stages of every rank in update {gantt["step"]}">{_axis(total, y=height + 20)}{"".join(bars)}</svg>')
+    stages = sorted({stage for row in rows for _, _, stage in row["segments"]}, key=lambda stage: list(STAGE_LABELS).index(stage)
+                    if stage in STAGE_LABELS else 99)
+    table = [[f'rank {row["rank"]}', _text(_stage(stage)), _seconds(start), _seconds(duration)]
+             for row in rows for start, duration, stage in row["segments"]]
+    return _section("gantt", "Ranks over one update",
+                    f'Update {gantt["step"]} on every rank, aligned on the wall clock ({_seconds(total)} from the first rank '
+                    f'starting to the last one finishing). A rank whose bars end late is the one the others wait for at the '
+                    f'next collective.', svg + _legend([(_stage(stage), _stage_tone(stage)) for stage in stages])
+                    + _table_view(["Rank", "Stage", "Starts at", "Duration"], table, numeric=(2, 3)))
+
+
+PIPELINE_TONES = {"launch": "use-2", "sync": "loss", "gemm": "use", "attention": "use", "communication": "loss-3",
+                  "memory": "loss-3", "all_reduce": "loss-3", "all_gather": "loss-3", "reduce_scatter": "loss-3",
+                  "broadcast": "loss-3"}
+
+
+def _pipeline(trace):
+    """Host thread and CUDA streams as lanes of one chart, with how far the host runs ahead of the GPU."""
+    windows = (trace or {}).get("pipeline") or []
+    if not windows:
+        return ""
+    blocks = []
+    for index, window in enumerate(windows):
+        buckets = window["buckets"] or 1
+        width = 1000 / buckets
+        lanes, labels, lane_height, gap = [], [], 16, 8
+        for row, lane in enumerate(window["lanes"]):
+            y = row * (lane_height + gap)
+            labels.append(f'<text class="lane-name" x="-12" y="{y + 12}" text-anchor="end">{_text(lane["name"])}</text>')
+            for first, last, label, intensity in lane["runs"]:
+                tone = PIPELINE_TONES.get(label, "loss")
+                lanes.append(f'<rect class="tone-{tone}" x="{first * width:.1f}" y="{y}" width="{max((last - first) * width - 1, 0.6):.1f}" '
+                             f'height="{lane_height}" rx="2" opacity="{0.4 + 0.6 * intensity:.2f}">'
+                             f'<title>{_tip(label, lane["name"], _percent(intensity, 0) + " busy")}</title></rect>')
+        top = len(window["lanes"]) * (lane_height + gap) + 10
+        lead = window.get("lead") or []
+        values = [value for value in lead if value is not None]
+        curve = ""
+        if values:
+            high = max(values) or 1e-6
+            scale = math.log10(high * 1e6 + 1)
+            def y_of(value):
+                return top + 50 - 50 * math.log10(value * 1e6 + 1) / scale if scale else top + 50
+            points = [f"{(i + 0.5) * width:.1f},{y_of(value):.1f}" for i, value in enumerate(lead) if value is not None]
+            median = sorted(values)[len(values) // 2]
+            curve = (f'<line class="grid" x1="0" x2="1000" y1="{top + 50}" y2="{top + 50}"/>'
+                     f'<polyline class="lead" points="{" ".join(points)}"/>'
+                     f'<text class="lane-name" x="-12" y="{top + 28}" text-anchor="end">Lead</text>'
+                     f'<text class="tick" x="1004" y="{top + 4}">{_text(_seconds(high))}</text>'
+                     f'<text class="tick" x="1004" y="{top + 52}">0</text>')
+            caption = (f'Launch lead, the median time a kernel waits in the queue after the host launches it: {_seconds(median)}. '
+                       f'Where the line touches zero the GPU is waiting for the host.')
+        else:
+            caption = ""
+        height = top + (62 if values else 0)
+        svg = (f'<svg class="pipeline" viewBox="-96 -6 1140 {height + 24}" role="img" aria-label="{_text(window["name"])} pipeline">'
+               f'{_axis(window["seconds"], window["start_s"], y=height + 14)}{"".join(lanes)}{"".join(labels)}{curve}</svg>')
+        blocks.append(f'<details class="window"{" open" if index == 0 else ""}><summary>{_text(window["name"].capitalize())}'
+                      f'<span>{_seconds(window["seconds"])} starting at {_seconds(window["start_s"])}</span></summary>{svg}'
+                      + (f'<p class="lede">{_text(caption)}</p>' if caption else "") + "</details>")
+    legend = _legend([("Host launching kernels", "use-2"), ("Host blocked in a sync", "loss"), ("Matrix kernels", "use"),
+                      ("Other kernels", "loss"), ("Communication and copies", "loss-3")])
+    return _section("pipeline", "Host and stream pipeline",
+                    "The launching host thread of rank 0 and its busiest CUDA streams. The host should stay ahead of the GPU: "
+                    "when it blocks in a sync, the streams drain and the GPU idles.", "".join(blocks) + legend)
+
+
 def _timeline(trace):
     windows = (trace or {}).get("timeline") or []
     if not windows:
@@ -814,6 +914,9 @@ details[open]>summary::before{transform:rotate(45deg)}
 .cell{height:16px;border-radius:3px;background:color-mix(in oklab,var(--heat-1) calc(var(--v) * 100%),var(--heat-0))} .cell.empty{background:transparent;outline:1px solid var(--line);outline-offset:-1px}
 .layers .grid-row{grid-template-columns:190px minmax(0,1fr) 0}
 .gpu-row{display:grid;grid-template-columns:64px minmax(0,1fr);gap:12px;align-items:center;margin-bottom:6px;font-size:.84rem}
+.gantt,.pipeline{display:block;width:100%;height:auto} .gantt .grid,.pipeline .grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
+.gantt text,.pipeline text{font-size:12px;fill:var(--ink-3)} .gantt rect:hover,.pipeline rect:hover{filter:brightness(1.15)}
+.lead{fill:none;stroke:var(--ink-2);stroke-width:1.5;vector-effect:non-scaling-stroke;stroke-linejoin:round}
 .timeline{display:block;width:100%;height:auto} .timeline .grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
 .timeline .area.tone-use{opacity:.9} .timeline .area.tone-loss{opacity:.8}
 .timeline text{font-size:12px;fill:var(--ink-3)} .crosshair{stroke:var(--ink);stroke-width:1;opacity:0;vector-effect:non-scaling-stroke}
@@ -893,7 +996,8 @@ SCRIPT = """
 })();
 """
 
-NAV = (("findings", "Findings"), ("mfu", "MFU"), ("stages", "Stages"), ("timeline", "Timeline"),
+NAV = (("findings", "Findings"), ("mfu", "MFU"), ("stages", "Stages"), ("gantt", "Ranks"), ("timeline", "Timeline"),
+       ("pipeline", "Pipeline"),
        ("communication", "Communication"), ("components", "Components"), ("kernel-tree", "Kernels"), ("gpu-heatmap", "Telemetry"))
 
 
@@ -919,7 +1023,7 @@ def render_report(summary: dict, back: str | None = None) -> str:
     nav = "".join(f'<a href="#{identifier}">{label}</a>' for identifier, label in NAV)
     body = (f'<header class="masthead"><h1>{_text(_title(summary))}</h1><p class="headline">{_text(_headline(summary))}</p>'
             f'{_identity(summary)}</header>{warning}{_overview(summary)}{_findings(summary)}{_mfu(summary)}{_projection(summary)}'
-            f'{_stages(summary)}{_timeline(trace)}{_activity(trace)}{_communication(trace)}{_scheduling(trace)}'
+            f'{_stages(summary)}{_gantt(summary)}{_timeline(trace)}{_pipeline(trace)}{_activity(trace)}{_communication(trace)}{_scheduling(trace)}'
             f'{_components(trace)}{_kernels(summary)}{_memory(summary)}{_wall(summary)}{_heatmap(summary)}')
     return _page(f"{_title(summary)} profile", body, nav=nav, back=back)
 

@@ -31,6 +31,9 @@ python launch/profile_train.py \
 | `--steady-steps` | 报告测量时间和吞吐的更新 |
 | `--trace torch` | 在稳态更新之后，用 PyTorch profiler 在 `--trace-ranks`（默认 rank 0）上追踪 `--trace-steps` 次额外更新：阶段、带输入形状的算子和内核 |
 | `--trace nsys` | 用 Nsight Systems 在所有 rank 上追踪同样的更新：每张 GPU 的阶段和内核（`--nsys` 是别名） |
+| `--sparse-backend kernel` | 用稀疏方法的 kernel 后端代替 reference 实现进行剖析 |
+| `--sparse-stage joint` | 分阶段的稀疏方法从第一次更新起就剖析 joint 阶段，而不是 burn-in；仅用于研究 |
+| `--flex-options` | 传给稀疏 kernel 后端的 FlexAttention kernel 选项（JSON），例如默认配置所需共享内存超过 GPU 上限时用 `'{"fwd_num_stages": 2}'` |
 | `--peak-tflops` | MFU 使用的每卡稠密 BF16 峰值，架构表未收录该 GPU 时使用 |
 | `--smoke-accumulation` | 每次更新的微批次数（默认：正式更新） |
 | `--validation-tokens` | 每次冒烟验证的 token 数（默认一个批次）。设为正式规模 41943040，正式运行估算才会包含验证时间 |
@@ -57,6 +60,8 @@ python -m launch.profile_report runs/profile-a/summary.json runs/profile-b/summa
 - **GPU activity in traced updates** 显示被追踪 GPU 的时间中，只做计算、计算与通信重叠、只做通信、内存拷贝和空闲各占多少。
 - **Communication** 按类型、数据类型和发起阶段列出每种集合通信：字节数、耗时、未被计算掩盖的部分，以及算法带宽和总线带宽（口径同 nccl-tests）。
 - **Scheduling and synchronization** 统计每次更新和每个 micro-batch 的 kernel 数、主机花在发射 kernel 上的时间，以及阻塞主机的同步调用；GPU 空闲拆成主机来不及、发射延迟和等待依赖三类。
+- **Ranks over one update** 是一张甘特图，把每个 rank 在一次稳态更新中的各阶段放在同一墙钟上；最后结束的 rank 就是其他 rank 要等的那一个。
+- **Host and stream pipeline** 把发射 kernel 的 host 线程和最忙的几条 CUDA stream 放在同一时间轴上，并画出发射提前量：一个 kernel 被 host 发射后在队列里等了多久。提前量接近零，说明 GPU 在等 host。
 - **Timeline** 为被追踪的更新、其中间一个 micro-batch，以及从最后一次反向到优化器的尾部，画出阶段、计算、通信、内存四条泳道。
 - **Model components** 按模型部件（attention、MLP、embedding、head，及每一层）拆分前向和反向的 GPU 时间；反向 kernel 归到创建它的前向模块。
 - **Operators and kernels** 是一棵可折叠的树：阶段、内核类别、算子（来自 PyTorch trace，带输入形状）、内核。每个内核归属发起它的阶段，所以异步集合通信会出现在发起它的位置。**Matrix shapes** 列出每种矩阵乘和 attention 形状及其 kernel 达到的速率，**Non-matrix operators** 对“其他计算 kernel”背后的算子排序。

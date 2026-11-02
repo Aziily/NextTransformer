@@ -8,6 +8,10 @@ data, forward, backward, gradient norm, host waits, the optimizer's three phases
 peak memory of each update. In a trace window it also names model components. The wrappers only read clocks and
 memory counters, record CUDA events and annotate the trace; they never touch tensors, so the training math and
 protocol are unchanged. Each rank writes ``DIR/rank_XXXX.json`` when the trainer returns.
+
+Two research overrides exist for profiling only: ``--profile-sparse-stage joint`` runs staged sparse methods in
+their joint stage from the first update, and ``--profile-flex-options`` passes FlexAttention kernel options (for
+example a pipeline depth that fits the shared memory of a GPU) to the sparse kernel backend.
 """
 
 from __future__ import annotations
@@ -299,6 +303,54 @@ def install(trainer, timeline):
     return uninstall
 
 
+def force_joint_stage(model):
+    """Keep sparse indexers out of their burn-in stage, whatever the update number.
+
+    A bounded profile starts at update 0, where staged sparse methods train only their indexer; this profiles the
+    joint stage that formal training spends almost all of its updates in. Research profiling only.
+    """
+    set_step = getattr(model, "set_step", None)
+
+    def joint():
+        for module in model.modules():
+            if hasattr(module, "in_burnin"):
+                module.in_burnin = False
+
+    if set_step is not None:
+        @functools.wraps(set_step)
+        def stepped(step):
+            set_step(step)
+            joint()
+        model.set_step = stepped
+    joint()
+    return model
+
+
+def patch_flex_options(module, options):
+    """Pass FlexAttention ``kernel_options`` (pipeline depth, block sizes) to every call through ``module``.
+
+    Explicit options of a call win. They select a kernel configuration only; the attention computed is the same.
+    Returns a function that restores the module.
+    """
+    original = module.flex_attention
+
+    @functools.wraps(original)
+    def flex_attention(*args, **kwargs):
+        kwargs["kernel_options"] = {**options, **(kwargs.get("kernel_options") or {})}
+        return original(*args, **kwargs)
+
+    module.flex_attention = flex_attention
+    if hasattr(module, "_flex_kernel"):
+        module._flex_kernel.cache_clear()
+
+    def restore():
+        module.flex_attention = original
+        if hasattr(module, "_flex_kernel"):
+            module._flex_kernel.cache_clear()
+
+    return restore
+
+
 class _CudaProfilerRange:
     """cudaProfilerStart/Stop, the capture range of ``nsys profile --capture-range=cudaProfilerApi``."""
 
@@ -336,6 +388,10 @@ def _parse(argv):
     parser.add_argument("--profile-trace", choices=("none", "torch", "nsys"), default="none")
     parser.add_argument("--profile-trace-steps", type=int, nargs=2, metavar=("FIRST", "LAST"))
     parser.add_argument("--profile-trace-ranks", type=int, nargs="+", help="ranks that record a torch trace (default: all)")
+    parser.add_argument("--profile-sparse-stage", choices=("auto", "joint"), default="auto",
+                        help="joint: profile the sparse joint stage from update 1 instead of the burn-in")
+    parser.add_argument("--profile-flex-options", type=json.loads, default=None,
+                        help="JSON FlexAttention kernel_options for the sparse kernel backend")
     args, trainer_argv = parser.parse_known_args(argv)
     if "--formal" in trainer_argv:
         parser.error("profiling is research-only and cannot run with --formal")
@@ -371,10 +427,19 @@ def main(argv=None):
         timeline.device_info = dict(name=properties.name, major=properties.major, minor=properties.minor,
                                     sms=properties.multi_processor_count, total_memory=properties.total_memory)
     uninstall = install(trainer, timeline)
+    restores = [uninstall]
+    if args.profile_sparse_stage == "joint":
+        build = trainer.build_model
+        trainer.build_model = functools.wraps(build)(lambda *a, **k: force_joint_stage(build(*a, **k)))
+        restores.append(lambda: setattr(trainer, "build_model", build))
+    if args.profile_flex_options:
+        import nexttransformer.models.sparse_kernels as sparse_kernels
+        restores.append(patch_flex_options(sparse_kernels, args.profile_flex_options))
     try:
         trainer.main(trainer_argv)
     finally:
-        uninstall()
+        for restore in reversed(restores):
+            restore()
         record = timeline.finish()
         args.profile_dir.mkdir(parents=True, exist_ok=True)
         (args.profile_dir / f"rank_{rank:04d}.json").write_text(json.dumps(record) + "\n")

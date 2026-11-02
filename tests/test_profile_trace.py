@@ -325,3 +325,20 @@ def test_torch_trace_ranks_non_matrix_operators_and_categories(tmp_path: Path):
     assert result["categories"]["elementwise"] == pytest.approx(5e-6)
     other = result["other_operators"]
     assert other == [dict(stage="forward", op="aten::add", category="elementwise", calls=1, seconds=pytest.approx(5e-6))]
+
+
+def test_torch_trace_builds_a_host_and_stream_pipeline(tmp_path: Path):
+    trace = tmp_path / "rank_0000.json.gz"
+    torch_trace(trace)
+    windows = {window["name"]: window for window in analyze_torch_traces([trace], steps=1)["pipeline"]}
+
+    update = windows["update"]
+    names = [lane["name"] for lane in update["lanes"]]
+    assert names[0].startswith("Host") and "Stream 7" in names and "Stream 20" in names
+    stream = next(lane for lane in update["lanes"] if lane["name"] == "Stream 20")
+    assert {run[2] for run in stream["runs"]} == {"all_reduce", "all_gather"}
+    host = update["lanes"][0]
+    assert "sync" in {run[2] for run in host["runs"]}
+    assert len(update["lead"]) == update["buckets"]
+    # Launch-to-start of non-communication kernels: 6, 39, 2 and 5 us; the flash kernel queued longest.
+    assert max(value for value in update["lead"] if value is not None) == pytest.approx(39e-6)

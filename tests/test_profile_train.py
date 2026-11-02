@@ -470,3 +470,33 @@ def test_write_site_writes_one_page_per_profile_and_an_index(tmp_path: Path):
     index = pages[0].read_text()
     assert 'href="profile-a.html"' in index and "qsa_hybrid" in index and 'class="compare-row"' in index
     assert "<h1>qsa_hybrid</h1>" in pages[2].read_text()
+
+
+def test_build_command_passes_sparse_profiling_overrides(tmp_path: Path):
+    command = build_command(parse(tmp_path, "--sparse-backend", "kernel", "--sparse-stage", "joint",
+                                  "--flex-options", '{"fwd_num_stages": 2}'), tmp_path / "run")
+    assert command[command.index("--sparse-backend") + 1] == "kernel"
+    assert command[command.index("--profile-sparse-stage") + 1] == "joint"
+    assert json.loads(command[command.index("--profile-flex-options") + 1]) == {"fwd_num_stages": 2}
+    assert command.index("--profile-flex-options") < command.index("--site-config")
+
+
+GANTT = {"step": 2, "seconds": 4.1, "rows": [
+    {"rank": 0, "segments": [[0.0, 0.1, "step_setup"], [0.1, 1.0, "forward"], [1.1, 2.0, "backward"], [3.1, 0.5, "optimizer.gather"]]},
+    {"rank": 1, "segments": [[0.5, 0.1, "step_setup"], [0.6, 1.0, "forward"], [1.6, 2.0, "backward"], [3.6, 0.5, "optimizer.gather"]]}]}
+PIPELINE = [{"name": "update", "start_s": 0.0, "seconds": 16.0, "buckets": 4, "lead": [0.002, None, 5e-6, 0.0004],
+             "lanes": [{"name": "Host thread", "runs": [[0, 2, "launch", 0.8], [3, 4, "sync", 1.0]]},
+                       {"name": "Stream 7", "runs": [[0, 3, "gemm", 0.9], [3, 4, "elementwise", 0.4]]},
+                       {"name": "Stream 23", "runs": [[3, 4, "all_reduce", 0.6]]}]}]
+
+
+def test_render_report_draws_a_rank_gantt_and_a_stream_pipeline():
+    summary = rich_summary()
+    summary["rank_gantt"] = GANTT
+    summary["trace_summary"]["pipeline"] = PIPELINE
+    html = render_report(summary)
+    assert 'id="gantt"' in html and html.count('class="gantt-row"') == 2
+    assert 'data-stage="backward"' in html and "rank 1" in html
+    assert 'id="pipeline"' in html and "Host thread" in html and "Stream 23" in html
+    assert 'class="lead"' in html and "2.0 ms" in html
+    assert 'href="#gantt"' in html and 'href="#pipeline"' in html
