@@ -161,13 +161,17 @@ def phase_flops(proof, token_share):
         return None
     cost = stages[0]["cost"]
     phases = cost["phases"]
-    matrix = defaultdict(float)
+    matrix, attention = defaultdict(float), defaultdict(float)
     for name, operator in cost.get("operators", {}).items():
-        matrix[name.split("/", 1)[0]] += operator.get("matrix", 0)
+        phase, op = name.split("/", 1)
+        matrix[phase] += operator.get("matrix", 0)
+        if "attention" in op:
+            attention[phase] += operator.get("theory", operator.get("matrix", 0))
     result = dict(forward=phases["forward"] * token_share, backward=phases["backward"] * token_share,
                   optimizer=float(phases.get("optimizer", 0)))
     result["total"] = result["forward"] + result["backward"] + result["optimizer"]
     result["matrix"] = (matrix["forward"] + matrix["backward"]) * token_share + matrix["optimizer"]
+    result["attention"] = (attention["forward"] + attention["backward"]) * token_share
     return result
 
 
@@ -195,13 +199,17 @@ def mfu_summary(flops, world, step_seconds, stages, trace, peak, clock_peak=None
     traced = max((trace or {}).get("steps", 1), 1)
     mean = {key: statistics.mean(row[key] for row in gpus) / traced for key in
             ("window_s", "compute_s", "exposed_communication_s", "exposed_memory_s", "idle_s", "gemm_s", "attention_s")}
-    measured = {}
+    measured, sources = {}, {}
     for kind in ("gemm", "attention"):
         values = [row.get(f"{kind}_flops") for row in gpus]
         measured[kind] = statistics.mean(values) / traced if all(value is not None for value in values) else None
+        sources[kind] = "trace"
+        # Custom or masked attention kernels carry no shapes in the trace; the audit counts every attention layer.
+        if kind == "attention" and flops.get("attention"):
+            measured[kind], sources[kind] = flops["attention"] / world, "audit"
         rate = measured[kind] / mean[f"{kind}_s"] if measured[kind] and mean[f"{kind}_s"] else None
         result["kernels"].append(dict(kind=kind, seconds=mean[f"{kind}_s"], flops=measured[kind],
-                                      tflops=rate / 1e12 if rate else None,
+                                      flops_source=sources[kind], tflops=rate / 1e12 if rate else None,
                                       efficiency=rate / peak if rate and peak else None,
                                       clock_efficiency=rate / clock_peak if rate and clock_peak else None))
     if not peak:

@@ -435,6 +435,9 @@ def collect(args: argparse.Namespace, output: Path, exit_code: int, started: flo
                                 * provenance["accumulation"] * provenance["protocol"]["sequence_len"],
                                 model_flops_per_gpu_s=model_flops_rate(rows or [], [s for s in steps if s not in traced],
                                                                        provenance["world_size"]))
+        software = provenance.get("software") or {}
+        payload["software"] = {key: software[key] for key in ("torch", "cuda", "nccl", "native_attention", "fla_core",
+                                                            "sparse_backend") if software.get(key)}
         validations = [row for row in rows or [] if row.get("event") == "validation"]
         checkpoints = [segment["host_s"] for step in records[0]["steps"] for segment in step["segments"]
                        if segment["stage"] == "checkpoint"] if records else []

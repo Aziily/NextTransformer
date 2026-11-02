@@ -151,11 +151,15 @@ def test_hardware_peak_follows_the_architecture_not_the_product_name():
 def test_phase_flops_splits_the_audited_update_cost():
     proof = {"stages": [{"stage": "main", "optimizer_steps": 46875, "cost": {
         "phases": {"forward": 300, "backward": 600, "optimizer": 100}, "total": 1000,
-        "operators": {"forward/aten.mm.default": {"matrix": 280}, "backward/aten.mm.default": {"matrix": 560},
-                      "backward/aten.add.Tensor": {"matrix": 0}, "optimizer/aten.bmm.default": {"matrix": 90}}}}]}
+        "operators": {"forward/aten.mm.default": {"matrix": 260, "theory": 260},
+                      "forward/native_attention": {"matrix": 20, "theory": 21},
+                      "backward/aten.mm.default": {"matrix": 520, "theory": 520},
+                      "backward/native_attention": {"matrix": 40, "theory": 42},
+                      "backward/aten.add.Tensor": {"matrix": 0, "theory": 3},
+                      "optimizer/aten.bmm.default": {"matrix": 90, "theory": 90}}}}]}
     # Forward and backward scale with the tokens of the update; the optimizer runs once per update.
     assert phase_flops(proof, token_share=0.25) == dict(forward=75.0, backward=150.0, optimizer=100.0, total=325.0,
-                                                       matrix=(280 + 560) * 0.25 + 90)
+                                                       matrix=(280 + 560) * 0.25 + 90, attention=(21 + 42) * 0.25)
     assert phase_flops({"stages": [{}, {}]}, token_share=1) is None
 
 
@@ -164,7 +168,7 @@ def test_mfu_summary_reports_phases_kernels_and_the_loss_waterfall():
         {"stage": "data", "seconds": 0.1}, {"stage": "forward", "seconds": 3.0}, {"stage": "backward", "seconds": 6.0},
         {"stage": "grad_norm", "seconds": 0.1}, {"stage": "optimizer.reduce", "seconds": 0.0},
         {"stage": "optimizer.compute", "seconds": 0.2}, {"stage": "optimizer.gather", "seconds": 0.6}]}
-    flops = dict(forward=60e12, backward=120e12, optimizer=2e12, total=182e12, matrix=178e12)
+    flops = dict(forward=60e12, backward=120e12, optimizer=2e12, total=182e12, matrix=178e12, attention=8e12)
     trace = {"per_gpu": [dict(gpu=0, window_s=10.0, compute_s=8.5, communication_s=1.2, overlap_s=0.2, memory_s=0.1,
                               exposed_memory_s=0.05, idle_s=0.45, exposed_communication_s=1.0, kernels=100, gemm_s=5.0,
                               gemm_flops=170e12, attention_s=1.0, attention_flops=8e12)]}
@@ -193,6 +197,11 @@ def test_mfu_summary_reports_phases_kernels_and_the_loss_waterfall():
                                             trace=with_categories, peak=50e12)["waterfall"]
                  if row["part"] == "other compute kernels")
     assert other["detail"] == [{"category": "elementwise", "seconds": 2.0}, {"category": "normalization", "seconds": 0.4}]
+    # Attention FLOPs always come from the audit: custom attention kernels carry no shapes in the trace.
+    opaque = dict(trace, per_gpu=[dict(trace["per_gpu"][0], attention_flops=0.0)])
+    attention = next(row for row in mfu_summary(flops=flops, world=1, step_seconds=10.0, stages=stages, trace=opaque,
+                                                peak=50e12)["kernels"] if row["kind"] == "attention")
+    assert attention["tflops"] == pytest.approx(8) and attention["flops_source"] == "audit"
     without_trace = mfu_summary(flops=flops, world=1, step_seconds=10.0, stages=stages, trace=None, peak=50e12)
     assert without_trace["waterfall"] == [] and without_trace["kernels"] == []
     assert mfu_summary(flops=flops, world=1, step_seconds=10.0, stages=stages, trace=None, peak=None)["mfu"] is None

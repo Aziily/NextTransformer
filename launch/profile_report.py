@@ -195,8 +195,10 @@ def _shape_html(summary: dict) -> str:
         return ""
     flops = shape.get("model_flops_per_gpu_s")
     rate = f" · {flops / 1e12:,.1f} model TFLOP/s per GPU (audited theory FLOPs)" if flops else ""
+    software = " · ".join(f"{_text(key.replace('_', ' '))} {_text(value)}" for key, value in (summary.get("software") or {}).items())
     return (f'<p class="muted">{shape["world"]} ranks × micro-batch {shape["micro_batch"]} × '
-            f'{shape["accumulation"]} accumulation = {shape["tokens_per_update"]:,} tokens per update{rate}.</p>')
+            f'{shape["accumulation"]} accumulation = {shape["tokens_per_update"]:,} tokens per update{rate}.'
+            + (f'<br>{software}' if software else "") + '</p>')
 
 
 def _projection_html(summary: dict) -> str:
@@ -429,7 +431,8 @@ def _mfu_html(summary: dict) -> str:
             f'padding never raises it. Peak: {basis}.</p><div class="grid">{grid}</div>'
             f'<h3>By phase</h3><table><thead><tr><th>Phase</th><th>Time</th><th>FLOPs per GPU</th><th>Rate</th><th>MFU</th>'
             f'</tr></thead><tbody>{phases}</tbody></table>'
-            + (f'<h3>Matrix kernels</h3><p class="muted">FLOPs from operator shapes in the trace, timed by their kernels.</p>'
+            + (f'<h3>Matrix kernels</h3><p class="muted">GEMM FLOPs from operator shapes in the trace, attention FLOPs from '
+               f'the audit (custom attention kernels carry no shapes), each timed by its kernels.</p>'
                f'<table><thead><tr><th>Kernels</th><th>Time</th><th>FLOPs</th><th>Rate</th><th>Of peak</th></tr></thead>'
                f'<tbody>{kernels}</tbody></table>' if kernels else "")
             + f'{waterfall}</section>')

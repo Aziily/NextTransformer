@@ -286,6 +286,7 @@ def test_render_report_shows_findings_stage_waterfall_and_drilldown_tree():
         '<script type="application/json"')[0]
     assert 'id="top-kernels"' in html and "ncclDevKernel_AllReduce_Sum_f32_RING_LL" in html
     assert "16,384 tokens per update" in html
+    assert "native attention sdpa" in render_report(dict(full_summary(), software={"native_attention": "sdpa"}))
     assert "https://" not in html and "http://" not in html
 
 
