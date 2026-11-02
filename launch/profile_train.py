@@ -26,8 +26,9 @@ if not __package__:
     # Run as a script: import this checkout, not another copy installed in the environment.
     sys.path.insert(0, str(REPO_ROOT))
 
-from launch.profile_analysis import (analyze_nsys_sqlite, analyze_torch_traces, diagnose, phase_bands, project_formal,
-                                     read_timelines, steady_interval, summarize_stages, wall_accounting)
+from launch.profile_analysis import (diagnose, hardware_peak, memory_summary, mfu_summary, phase_bands, phase_flops,
+                                     project_formal, read_timelines, steady_interval, summarize_stages, wall_accounting)
+from launch.profile_trace import analyze_nsys_sqlite, analyze_torch_traces
 from launch.profile_report import write_report
 
 
@@ -108,7 +109,8 @@ def summarize_metrics(rows: list[dict], warmup_steps: int, traced_steps: list[in
 def _nvidia_command(period_ms: int) -> list[str]:
     return [
         "nvidia-smi",
-        "--query-gpu=index,uuid,memory.total,memory.used,utilization.gpu,power.draw,temperature.gpu,clocks.sm",
+        "--query-gpu=index,uuid,memory.total,memory.used,utilization.gpu,power.draw,temperature.gpu,clocks.sm,"
+        "clocks.max.sm",
         "--format=csv,noheader,nounits",
         "-lms",
         str(period_ms),
@@ -140,7 +142,8 @@ def sample_nvidia_smi(output_path: Path, stop: threading.Event, period_ms: int =
                     numbers = [float(value.strip()) for value in values[2:]]
                     row = dict(
                         zip(
-                            ("memory_total", "memory_used", "gpu_util", "power", "temperature", "sm_clock"),
+                            ("memory_total", "memory_used", "gpu_util", "power", "temperature", "sm_clock",
+                             "sm_clock_max"),
                             numbers,
                         )
                     )
@@ -190,6 +193,7 @@ def summarize_telemetry(path: Path, interval_start: float, interval_end: float,
                 "memory_total_mib": total,
                 "power_mean_w": statistics.mean(row["power"] for row in rows),
                 "sm_clock_mean_mhz": statistics.mean(row["sm_clock"] for row in rows),
+                "sm_clock_max_mhz": max((row.get("sm_clock_max", 0) for row in rows), default=0) or None,
             }
         )
     heatmap_samples = [
@@ -270,6 +274,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--trace-ranks", type=int, nargs="+", default=[0], help="ranks the torch trace records")
     parser.add_argument("--nsys", action="store_true", help="same as --trace nsys")
     parser.add_argument("--nsys-output", type=Path)
+    parser.add_argument("--peak-tflops", type=float,
+                        help="dense BF16 tensor peak per GPU for MFU (default: from the GPU architecture and clock)")
     parser.add_argument("--telemetry-period-ms", type=int, default=200)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--formal", action="store_true", help=argparse.SUPPRESS)
@@ -383,6 +389,13 @@ def _attempt(errors: dict, name: str, function, *args):
         return None
 
 
+def _cost_proof(config: Path) -> dict:
+    """The cost proof a configuration's training charges, from its calibration record."""
+    path = config if config.is_absolute() else REPO_ROOT / config
+    record = json.loads(path.read_text())["calibration"]["cost_record"]
+    return json.loads((path.parent / record).read_text())
+
+
 def collect(args: argparse.Namespace, output: Path, exit_code: int, started: float, stopped: float) -> dict:
     """Summarize a finished profile directory."""
     run_output, stages_dir = output / "run", output / "stages"
@@ -441,11 +454,31 @@ def collect(args: argparse.Namespace, output: Path, exit_code: int, started: flo
                 if sqlite.exists() else None
         if payload["trace_summary"] is None and "trace" not in errors:
             errors["trace"] = "no trace file was written"
-    memory_total = max((row.get("memory_total_mib", 0) for row in payload["telemetry_summary"]["per_gpu"]), default=0)
+    device = next((record["device"] for record in records if record.get("device")), None)
+    if device is not None:
+        device = dict(device, max_mhz=max((row.get("sm_clock_max_mhz") or 0 for row in
+                                           payload["telemetry_summary"]["per_gpu"]), default=0) or None)
+    clocks = [row["sm_clock_mean_mhz"] for row in payload["telemetry_summary"]["per_gpu"] if row.get("sm_clock_mean_mhz")]
+    payload["hardware"] = dict(device=device, **hardware_peak(device, statistics.mean(clocks) if clocks else None,
+                                                             args.peak_tflops))
+    memory_total = (device or {}).get("total_memory") or max(
+        (row.get("memory_total_mib", 0) for row in payload["telemetry_summary"]["per_gpu"]), default=0) * 2**20 or None
+    if records:
+        payload["memory_summary"] = _attempt(errors, "memory", memory_summary, records, args.warmup_steps, memory_total)
+    shape = payload.get("shape")
+    proof = _attempt(errors, "cost proof", _cost_proof, args.config) if shape else None
+    if proof and shape:
+        token_share = shape["tokens_per_update"] / provenance["protocol"]["global_batch_tokens"]
+        flops = phase_flops(proof, token_share)
+        payload["mfu_summary"] = _attempt(errors, "mfu", mfu_summary, flops, shape["world"],
+                                          steady.get("median_step_seconds"), payload.get("stage_summary") or {},
+                                          payload.get("trace_summary"), payload["hardware"]["dense_bf16_flops"],
+                                          payload["hardware"]["observed_clock_flops"])
     payload["findings"] = _attempt(
         errors, "findings", diagnose, payload.get("stage_summary") or {}, payload.get("trace_summary"),
         payload.get("projection"), payload.get("wall_accounting") or [], payload["telemetry_summary"],
-        steady.get("peak_memory_bytes"), memory_total * 2**20 or None) or []
+        (payload.get("memory_summary") or {}).get("reserved_peak") or steady.get("peak_memory_bytes"), memory_total,
+        payload.get("mfu_summary")) or []
     payload["artifacts"] = {
         "run": str(run_output),
         "metrics": str(metrics_path),

@@ -1,13 +1,7 @@
-import gzip
-import json
-from pathlib import Path
-import sqlite3
-
 import pytest
 
-from launch.profile_analysis import (analyze_nsys_sqlite, analyze_torch_traces, busy_breakdown, classify_kernel,
-                                     diagnose, phase_bands, project_formal, short_kernel_name, steady_interval,
-                                     summarize_stages, wall_accounting)
+from launch.profile_analysis import (diagnose, hardware_peak, memory_summary, mfu_summary, phase_bands, phase_flops,
+                                     project_formal, steady_interval, summarize_stages, wall_accounting)
 
 
 def segment(stage, host, device=None, start=0.0):
@@ -78,143 +72,6 @@ def test_steady_interval_and_phase_bands_follow_rank_zero_wall_clock():
     assert all(band["end"] >= band["start"] for band in bands)
 
 
-@pytest.mark.parametrize("name, category", [
-    ("ncclDevKernel_AllReduce_Sum_f32_RING_LL", "communication"),
-    ("ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_32x1_nn", "gemm"),
-    ("void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8>(T1::Params)", "gemm"),
-    ("flash_bwd_dq_dk_dv_loop_seqk_parallel_kernel", "attention"),
-    ("triton_red_fused__to_copy_clamp_min_copy__div_lerp_linalg_vector_norm_mul_rsub_2", "fused"),
-    ("void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>>(int, T2, T3)", "elementwise"),
-    ("layer_norm_grad_input_kernel_vectorized", "normalization"),
-    ("multi_tensor_apply_kernel", "optimizer"),
-    ("Memcpy HtoD (Pageable -> Device)", "memory"),
-    ("cunn_SoftMaxForward", "softmax"),
-    ("reduce_kernel", "reduction"),
-    ("CatArrayBatchedCopy_alignedK_contig", "copy"),
-])
-def test_classify_kernel(name, category):
-    assert classify_kernel(name) == category
-
-
-def test_short_kernel_name_keeps_the_informative_part():
-    assert short_kernel_name("void at::native::vectorized_elementwise_kernel<4, at::native::FillFunctor<float>>(int, T2, T3)") \
-        == "at::native::vectorized_elementwise_kernel"
-    assert short_kernel_name("void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8>(T1::Params)") \
-        == "cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8"
-    assert short_kernel_name("ncclDevKernel_AllGather_RING_LL") == "ncclDevKernel_AllGather_RING_LL"
-    assert short_kernel_name("void at::native::(anonymous namespace)::vectorized_layer_norm_kernel<float, float>(int, float*)") \
-        == "at::native::vectorized_layer_norm_kernel"
-
-
-def test_busy_breakdown_separates_compute_communication_overlap_and_idle():
-    result = busy_breakdown([(0.0, 10.0, "compute"), (5.0, 15.0, "communication"), (18.0, 20.0, "memory")])
-    assert result == pytest.approx(dict(window_s=20.0, compute_s=10.0, communication_s=10.0, overlap_s=5.0,
-                                        memory_s=2.0, idle_s=3.0, exposed_communication_s=5.0))
-
-
-def write_torch_trace(path: Path):
-    events = [
-        {"ph": "X", "cat": "user_annotation", "name": "nt.stage:forward", "pid": 1, "tid": 1, "ts": 0, "dur": 100},
-        {"ph": "X", "cat": "user_annotation", "name": "nt.stage:backward", "pid": 1, "tid": 1, "ts": 100, "dur": 200},
-        {"ph": "X", "cat": "cpu_op", "name": "aten::linear", "pid": 1, "tid": 1, "ts": 10, "dur": 20,
-         "args": {"External id": 1, "Input Dims": [[1, 4], [8, 4], []]}},
-        {"ph": "X", "cat": "cpu_op", "name": "aten::addmm", "pid": 1, "tid": 1, "ts": 12, "dur": 15, "args": {"External id": 2}},
-        {"ph": "X", "cat": "cuda_runtime", "name": "cudaLaunchKernel", "pid": 1, "tid": 1, "ts": 14, "dur": 2,
-         "args": {"correlation": 10, "External id": 2}},
-        {"ph": "X", "cat": "cuda_runtime", "name": "cudaMemcpyAsync", "pid": 1, "tid": 1, "ts": 3, "dur": 1,
-         "args": {"correlation": 13}},
-        {"ph": "X", "cat": "cpu_op", "name": "autograd::engine::evaluate_function: AddmmBackward0", "pid": 1,
-         "tid": 2, "ts": 150, "dur": 40, "args": {"External id": 3}},
-        {"ph": "X", "cat": "cuda_driver", "name": "cuLaunchKernel", "pid": 1, "tid": 2, "ts": 155, "dur": 2,
-         "args": {"correlation": 11}},
-        {"ph": "X", "cat": "cpu_op", "name": "autograd::engine::evaluate_function: torch::autograd::AccumulateGrad",
-         "pid": 1, "tid": 2, "ts": 195, "dur": 10, "args": {"External id": 5}},
-        {"ph": "X", "cat": "cpu_op", "name": "nccl:all_reduce", "pid": 1, "tid": 2, "ts": 198, "dur": 5,
-         "args": {"External id": 4}},
-        {"ph": "X", "cat": "cuda_runtime", "name": "cudaLaunchKernel", "pid": 1, "tid": 2, "ts": 200, "dur": 1,
-         "args": {"correlation": 12}},
-        {"ph": "X", "cat": "kernel", "name": "ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_32x1_nn", "pid": 0,
-         "tid": 7, "ts": 20, "dur": 50, "args": {"correlation": 10, "device": 0, "stream": 7}},
-        {"ph": "X", "cat": "kernel", "name": "ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_32x1_nt", "pid": 0,
-         "tid": 7, "ts": 160, "dur": 30, "args": {"correlation": 11, "device": 0, "stream": 7}},
-        {"ph": "X", "cat": "kernel", "name": "ncclDevKernel_AllReduce_Sum_f32_RING_LL", "pid": 0, "tid": 20,
-         "ts": 170, "dur": 60, "args": {"correlation": 12, "device": 0, "stream": 20}},
-        {"ph": "X", "cat": "gpu_memcpy", "name": "Memcpy HtoD (Pageable -> Device)", "pid": 0, "tid": 7,
-         "ts": 5, "dur": 5, "args": {"correlation": 13, "device": 0, "stream": 7}},
-    ]
-    with gzip.open(path, "wt") as handle:
-        json.dump({"traceEvents": events}, handle)
-
-
-def find(nodes, name):
-    return next(node for node in nodes if node["name"] == name)
-
-
-def test_analyze_torch_traces_builds_stage_category_operator_kernel_tree(tmp_path: Path):
-    trace = tmp_path / "rank_0000.json.gz"
-    write_torch_trace(trace)
-    result = analyze_torch_traces([trace], steps=1)
-
-    assert result["source"] == "torch"
-    assert result["per_gpu"][0] == pytest.approx(dict(
-        gpu=0, window_s=225e-6, compute_s=80e-6, communication_s=60e-6, overlap_s=20e-6, memory_s=5e-6,
-        idle_s=100e-6, exposed_communication_s=40e-6, kernels=4), rel=1e-6)
-    forward = find(result["tree"], "forward")
-    assert forward["seconds"] == pytest.approx(55e-6)
-    gemm = find(forward["children"], "gemm")
-    operator = gemm["children"][0]
-    assert operator["name"] == "aten::linear [1, 4] · [8, 4]"
-    assert operator["children"][0]["name"] == "ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_32x1_nn"
-    backward = find(result["tree"], "backward")
-    assert find(backward["children"], "communication")["children"][0]["name"] == "nccl:all_reduce"
-    assert find(backward["children"], "gemm")["children"][0]["name"] == "AddmmBackward0"
-    assert result["top_kernels"][0]["name"] == "ncclDevKernel_AllReduce_Sum_f32_RING_LL"
-
-
-def write_nsys_sqlite(path: Path):
-    db = sqlite3.connect(path)
-    db.executescript("""
-        CREATE TABLE StringIds (id INTEGER PRIMARY KEY, value TEXT);
-        CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start INT, end INT, deviceId INT, streamId INT, correlationId INT,
-            globalPid INT, demangledName INT, shortName INT);
-        CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME (start INT, end INT, globalTid INT, correlationId INT, nameId INT);
-        CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY (start INT, end INT, deviceId INT, streamId INT, correlationId INT,
-            globalPid INT, bytes INT, copyKind INT);
-        CREATE TABLE NVTX_EVENTS (start INT, end INT, eventType INT, text TEXT, textId INT, globalTid INT);
-    """)
-    db.executemany("INSERT INTO StringIds VALUES (?, ?)", [(1, "ampere_bf16_s16816gemm_nn"), (2, "ncclDevKernel_AllGather_RING_LL"),
-                                                         (3, "nt.stage:optimizer.gather")])
-    kernels, runtime, nvtx = [], [], []
-    for gpu, pid in ((0, 100), (1, 101)):
-        main, worker = (pid << 24) | pid, (pid << 24) | (pid + 1)
-        nvtx.append((1_000, 2_000, 59, "nt.stage:backward", None, main))
-        nvtx.append((2_000, 3_000, 59, None, 3, main))
-        runtime.append((1_100, 1_110, worker, 1, 0))
-        runtime.append((2_100, 2_110, main, 2, 0))
-        kernels.append((1_200, 1_700 + 100 * gpu, gpu, 7, 1, pid << 24, 1, 1))
-        kernels.append((2_200, 2_600, gpu, 20, 2, pid << 24, 2, 2))
-    db.executemany("INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (?, ?, ?, ?, ?, ?, ?, ?)", kernels)
-    db.executemany("INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES (?, ?, ?, ?, ?)", runtime)
-    db.executemany("INSERT INTO NVTX_EVENTS VALUES (?, ?, ?, ?, ?, ?)", nvtx)
-    db.commit()
-    db.close()
-
-
-def test_analyze_nsys_sqlite_attributes_kernels_of_every_rank_to_stages(tmp_path: Path):
-    path = tmp_path / "trace.sqlite"
-    write_nsys_sqlite(path)
-    result = analyze_nsys_sqlite(path, steps=1)
-
-    assert result["source"] == "nsys"
-    assert [row["gpu"] for row in result["per_gpu"]] == [0, 1]
-    assert result["per_gpu"][1]["compute_s"] == pytest.approx(600e-9)
-    assert result["per_gpu"][0]["communication_s"] == pytest.approx(400e-9)
-    backward = find(result["tree"], "backward")
-    assert backward["seconds"] == pytest.approx((500e-9 + 600e-9) / 2)
-    gather = find(result["tree"], "optimizer.gather")
-    assert find(gather["children"], "communication")["children"][0]["name"] == "ncclDevKernel_AllGather_RING_LL"
-
-
 def test_project_formal_only_when_the_update_shape_matches():
     protocol = {"total_tokens": 49_152_000_000, "global_batch_tokens": 1_048_576, "sequence_len": 2048,
                 "data_parallel_size": 8}
@@ -271,3 +128,98 @@ def test_diagnose_flags_lagging_and_memory_pressure_from_steady_telemetry():
     ids = {finding["id"]: finding for finding in findings}
     assert "GPU 2" in ids["lagging-gpu"]["detail"]
     assert "memory-pressure" in ids
+
+
+def test_hardware_peak_follows_the_architecture_not_the_product_name():
+    consumer = hardware_peak(dict(name="NVIDIA GeForce Example", major=8, minor=6, sms=82, max_mhz=2100),
+                             observed_mhz=1875)
+    assert consumer["dense_bf16_flops"] == pytest.approx(82 * 512 * 1695e6)
+    assert consumer["dense_bf16_flops"] / 1e12 == pytest.approx(71.2, abs=0.1)
+    assert consumer["observed_clock_flops"] == pytest.approx(82 * 512 * 1875e6)
+    assert "sm86" in consumer["basis"] and "1695 MHz" in consumer["basis"]
+    datacenter = hardware_peak(dict(name="NVIDIA Example", major=8, minor=0, sms=108, max_mhz=1410))
+    assert datacenter["dense_bf16_flops"] / 1e12 == pytest.approx(312, abs=0.5)
+    unlisted = hardware_peak(dict(name="NVIDIA GeForce Other", major=8, minor=6, sms=70, max_mhz=2000))
+    assert unlisted["dense_bf16_flops"] == pytest.approx(70 * 512 * 2000e6)
+    assert "maximum SM clock" in unlisted["basis"]
+    assert hardware_peak(dict(name="Unknown", major=12, minor=0, sms=10, max_mhz=1000))["dense_bf16_flops"] is None
+    override = hardware_peak(dict(name="x", major=8, minor=6, sms=82, max_mhz=2100), override_tflops=50.0)
+    assert override["dense_bf16_flops"] == 50e12 and override["basis"] == "--peak-tflops 50"
+    assert hardware_peak(None)["dense_bf16_flops"] is None
+
+
+def test_phase_flops_splits_the_audited_update_cost():
+    proof = {"stages": [{"stage": "main", "optimizer_steps": 46875, "cost": {
+        "phases": {"forward": 300, "backward": 600, "optimizer": 100}, "total": 1000,
+        "operators": {"forward/aten.mm.default": {"matrix": 280}, "backward/aten.mm.default": {"matrix": 560},
+                      "backward/aten.add.Tensor": {"matrix": 0}, "optimizer/aten.bmm.default": {"matrix": 90}}}}]}
+    # Forward and backward scale with the tokens of the update; the optimizer runs once per update.
+    assert phase_flops(proof, token_share=0.25) == dict(forward=75.0, backward=150.0, optimizer=100.0, total=325.0,
+                                                       matrix=(280 + 560) * 0.25 + 90)
+    assert phase_flops({"stages": [{}, {}]}, token_share=1) is None
+
+
+def test_mfu_summary_reports_phases_kernels_and_the_loss_waterfall():
+    stages = {"step_seconds": 10.0, "stages": [
+        {"stage": "data", "seconds": 0.1}, {"stage": "forward", "seconds": 3.0}, {"stage": "backward", "seconds": 6.0},
+        {"stage": "grad_norm", "seconds": 0.1}, {"stage": "optimizer.reduce", "seconds": 0.0},
+        {"stage": "optimizer.compute", "seconds": 0.2}, {"stage": "optimizer.gather", "seconds": 0.6}]}
+    flops = dict(forward=60e12, backward=120e12, optimizer=2e12, total=182e12, matrix=178e12)
+    trace = {"per_gpu": [dict(gpu=0, window_s=10.0, compute_s=8.5, communication_s=1.2, overlap_s=0.2, memory_s=0.1,
+                              exposed_memory_s=0.05, idle_s=0.45, exposed_communication_s=1.0, kernels=100, gemm_s=5.0,
+                              gemm_flops=170e12, attention_s=1.0, attention_flops=8e12)]}
+    result = mfu_summary(flops=flops, world=1, step_seconds=10.0, stages=stages, trace=trace, peak=50e12)
+
+    assert result["achieved_flops"] == pytest.approx(18.2e12)
+    assert result["mfu"] == pytest.approx(18.2 / 50)
+    phases = {row["phase"]: row for row in result["phases"]}
+    assert phases["forward"]["mfu"] == pytest.approx(60 / 3 / 50)
+    assert phases["backward"]["mfu"] == pytest.approx(120 / 6 / 50)
+    assert phases["optimizer"]["seconds"] == pytest.approx(0.8)
+    kernels = {row["kind"]: row for row in result["kernels"]}
+    assert kernels["gemm"]["efficiency"] == pytest.approx(170 / 5 / 50)
+    assert kernels["attention"]["tflops"] == pytest.approx(8)
+    parts = {row["part"]: row["seconds"] for row in result["waterfall"]}
+    assert parts["ideal"] == pytest.approx(182 / 50)
+    assert parts["gemm below peak"] == pytest.approx(5.0 - 170 / 50)
+    assert parts["attention below peak"] == pytest.approx(1.0 - 8 / 50)
+    assert parts["other compute kernels"] == pytest.approx(8.5 - 6.0 - (182 - 178) / 50)
+    assert parts["exposed communication"] == pytest.approx(1.0)
+    assert parts["idle"] == pytest.approx(0.45)
+    assert sum(parts.values()) == pytest.approx(10.0, abs=0.06)
+    with_categories = dict(trace, categories={"gemm": 5.0, "attention": 1.0, "elementwise": 2.0, "normalization": 0.4,
+                                              "communication": 1.2})
+    other = next(row for row in mfu_summary(flops=flops, world=1, step_seconds=10.0, stages=stages,
+                                            trace=with_categories, peak=50e12)["waterfall"]
+                 if row["part"] == "other compute kernels")
+    assert other["detail"] == [{"category": "elementwise", "seconds": 2.0}, {"category": "normalization", "seconds": 0.4}]
+    without_trace = mfu_summary(flops=flops, world=1, step_seconds=10.0, stages=stages, trace=None, peak=50e12)
+    assert without_trace["waterfall"] == [] and without_trace["kernels"] == []
+    assert mfu_summary(flops=flops, world=1, step_seconds=10.0, stages=stages, trace=None, peak=None)["mfu"] is None
+
+
+def test_memory_summary_reports_per_rank_peaks_and_headroom():
+    records = [{"rank": rank, "steps": [{"step": 0, "profiled": False, "segments": []},
+                                         {"step": 1, "profiled": False, "segments": [], "memory": dict(
+                                             allocated_peak=10 * 2**30, reserved_peak=12 * 2**30)},
+                                         {"step": 2, "profiled": False, "segments": [], "memory": dict(
+                                             allocated_peak=(18 + rank) * 2**30, reserved_peak=(20 + rank) * 2**30)}]}
+               for rank in range(2)]
+    result = memory_summary(records, warmup_steps=1, total_bytes=24 * 2**30)
+    assert [row["rank"] for row in result["per_rank"]] == [0, 1]
+    assert result["per_rank"][1] == dict(rank=1, allocated_peak=19 * 2**30, reserved_peak=21 * 2**30)
+    assert result["headroom_bytes"] == 3 * 2**30
+    assert result["reserved_share"] == pytest.approx(21 / 24)
+    assert memory_summary([], warmup_steps=1, total_bytes=None) is None
+
+
+def test_diagnose_prices_a_per_micro_batch_host_sync_by_the_idle_it_causes():
+    trace = {"per_gpu": [], "launch": {"micro_batches": 64},
+             "syncs": [{"api": "cudaStreamSynchronize", "source": "aten::to", "stage": "backward", "calls": 64,
+                        "seconds": 4.6}],
+             "idle": {"total_s": 0.39, "host_s": 0.21, "launch_s": 0.01, "dependency_s": 0.17}}
+    findings = diagnose(stages={"step_seconds": 16.0, "stages": []}, trace=trace, projection=None, accounting=[],
+                        telemetry={"per_gpu": []}, peak_memory_bytes=None, memory_total_bytes=None)
+    sync = next(finding for finding in findings if finding["id"] == "host-sync")
+    assert sync["severity"] == "info"
+    assert "0.21 s" in sync["detail"] and "aten::to" in sync["detail"]

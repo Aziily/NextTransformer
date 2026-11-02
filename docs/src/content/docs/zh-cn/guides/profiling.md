@@ -31,6 +31,7 @@ python launch/profile_train.py \
 | `--steady-steps` | 报告测量时间和吞吐的更新 |
 | `--trace torch` | 在稳态更新之后，用 PyTorch profiler 在 `--trace-ranks`（默认 rank 0）上追踪 `--trace-steps` 次额外更新：阶段、带输入形状的算子和内核 |
 | `--trace nsys` | 用 Nsight Systems 在所有 rank 上追踪同样的更新：每张 GPU 的阶段和内核（`--nsys` 是别名） |
+| `--peak-tflops` | MFU 使用的每卡稠密 BF16 峰值，架构表未收录该 GPU 时使用 |
 | `--smoke-accumulation` | 每次更新的微批次数（默认：正式更新） |
 | `--validation-tokens` | 每次冒烟验证的 token 数（默认一个批次）。设为正式规模 41943040，正式运行估算才会包含验证时间 |
 
@@ -41,12 +42,18 @@ python launch/profile_train.py \
 用浏览器打开 `report.html`，不需要服务器或网络。各部分从上到下依次是：
 
 - **What to look at first** 列出发现及其依据：更新形状与正式训练不同、通信没有被计算掩盖、GPU 空闲、数据卡顿、各 rank 在同一阶段耗时不一致、大量极短内核、部分 GPU 利用率偏低、显存接近占满。
-- **Steady state** 给出更新时间中位数、吞吐、峰值显存和更新形状，以及每张 GPU 每秒的审计模型 FLOPs。
+- **Model FLOPs utilization** 用一次更新的审计 FLOPs（配置的成本证明，即训练器计费的 FLOPs）除以 GPU 的稠密 BF16 tensor 峰值。峰值由架构、SM 数和频率推算，可用 `--peak-tflops` 覆盖。报告给出整次更新以及前向、反向、优化器各自的 MFU，并分别按规格频率和实际运行频率计算。有 trace 时，还会给出矩阵和 attention kernel 的实际速率，以及一张“MFU 损失瀑布图”：矩阵 kernel 低于峰值、其他计算 kernel（逐元素、归一化、类型转换）、未掩盖的通信、未掩盖的内存拷贝、空闲。
+- **Steady state** 给出更新时间中位数、吞吐、峰值显存和更新形状。
+- **Memory** 给出稳态更新中每个 rank 的峰值已分配显存、峰值保留显存和剩余余量。
 - **Formal run estimate** 只在剖析采用正式更新形状时出现：训练更新、验证事件（`--validation-tokens` 至少测了正式规模的八分之一时），以及滚动检查点。CORE-22 评测不在测量范围内。
 - **Where an update spends its time** 把一次稳态更新拆成数据、前向、反向、梯度范数、主机等待，以及优化器的 reduce、compute、gather 三个阶段，在每个 rank 上用 CUDA 事件计时。展开某个阶段可以看各 rank 的时间。
 - **Wall time of this profile** 区分启动、预热、稳态和被追踪的更新、评测和检查点。
 - **GPU activity in traced updates** 显示被追踪 GPU 的时间中，只做计算、计算与通信重叠、只做通信、内存拷贝和空闲各占多少。
-- **Operators and kernels** 是一棵可折叠的树：阶段、内核类别、算子（来自 PyTorch trace，带输入形状）、内核。每个内核归属发起它的阶段，所以异步集合通信会出现在发起它的位置。
+- **Communication** 按类型、数据类型和发起阶段列出每种集合通信：字节数、耗时、未被计算掩盖的部分，以及算法带宽和总线带宽（口径同 nccl-tests）。
+- **Scheduling and synchronization** 统计每次更新和每个 micro-batch 的 kernel 数、主机花在发射 kernel 上的时间，以及阻塞主机的同步调用；GPU 空闲拆成主机来不及、发射延迟和等待依赖三类。
+- **Timeline** 为被追踪的更新、其中间一个 micro-batch，以及从最后一次反向到优化器的尾部，画出阶段、计算、通信、内存四条泳道。
+- **Model components** 按模型部件（attention、MLP、embedding、head，及每一层）拆分前向和反向的 GPU 时间；反向 kernel 归到创建它的前向模块。
+- **Operators and kernels** 是一棵可折叠的树：阶段、内核类别、算子（来自 PyTorch trace，带输入形状）、内核。每个内核归属发起它的阶段，所以异步集合通信会出现在发起它的位置。**Matrix shapes** 列出每种矩阵乘和 attention 形状及其 kernel 达到的速率，**Non-matrix operators** 对“其他计算 kernel”背后的算子排序。
 - **GPU × time heatmap** 显示整个剖析过程中每张 GPU 的采样利用率、显存、功耗或空闲比例，并用一条色带标出各阶段。每张 GPU 的均值和峰值只统计稳态更新。
 
 ## 输出文件

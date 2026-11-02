@@ -4,9 +4,10 @@
         TRAINER ARGUMENTS ...
 
 runs ``nexttransformer.train`` unchanged in every rank and records when the trainer enters each stage of an update:
-data, forward, backward, gradient norm, host waits, the optimizer's three phases, evaluation and checkpoints. The
-wrappers only read clocks, record CUDA events and optionally annotate a trace window; they never touch tensors, so
-the training math and protocol are unchanged. Each rank writes ``DIR/rank_XXXX.json`` when the trainer returns.
+data, forward, backward, gradient norm, host waits, the optimizer's three phases, evaluation and checkpoints, plus the
+peak memory of each update. In a trace window it also names model components. The wrappers only read clocks and
+memory counters, record CUDA events and annotate the trace; they never touch tensors, so the training math and
+protocol are unchanged. Each rank writes ``DIR/rank_XXXX.json`` when the trainer returns.
 """
 
 from __future__ import annotations
@@ -21,17 +22,19 @@ import time
 
 
 STAGE_PREFIX = "nt.stage:"
+MODULE_PREFIX = "nt.module:"
 
 
 class Timeline:
     """Contiguous stage segments of one rank, grouped by update; step 0 is everything before the first update."""
 
     def __init__(self, rank=0, world=1, device=None, profile_steps=None, profiler_factory=None, trace_dir=None,
-                 annotate=None, clock=time.perf_counter, wall=time.time):
+                 annotate=None, clock=time.perf_counter, wall=time.time, memory=None):
         self.rank, self.world, self.device = rank, world, device
         self.profile_steps = profile_steps
         self.profiler_factory, self.trace_dir, self.annotate = profiler_factory, trace_dir, annotate
-        self.clock, self.wall = clock, wall
+        self.clock, self.wall, self.memory = clock, wall, memory
+        self.device_info = None
         self.step, self.stage = 0, "startup"
         self.steps = [{"step": 0, "profiled": False, "segments": []}]
         self._cuda = False
@@ -87,9 +90,19 @@ class Timeline:
             return
         boundary = self._boundary()
         self._close(boundary)
-        if stage == "step_tail" and self._profiler is not None and self.step >= self.profile_steps[1]:
-            self._stop_profiler()
+        if stage == "step_tail":
+            # The trainer resets the peak-memory counters when the next update starts.
+            current = self.steps[-1]
+            if self.memory is not None and self.step > 0 and "memory" not in current:
+                allocated, reserved = self.memory()
+                current["memory"] = {"allocated_peak": allocated, "reserved_peak": reserved}
+            if self._profiler is not None and self.step >= self.profile_steps[1]:
+                self._stop_profiler()
         self._begin(stage, boundary)
+
+    @property
+    def tracing(self):
+        return self._profiler is not None and self.annotate is not None
 
     def _stop_profiler(self):
         # Export as soon as the window closes: a later crash keeps the trace and the buffers are freed.
@@ -119,8 +132,49 @@ class Timeline:
                 start, end = segment.pop("_events")
                 timed = resolve and start is not None and end is not None
                 segment["device_s"] = start.elapsed_time(end) / 1000 if timed else None
-        self._record = dict(rank=self.rank, world=self.world, profiled_steps=self._profiled, steps=self.steps)
+        self._record = dict(rank=self.rank, world=self.world, profiled_steps=self._profiled, steps=self.steps,
+                            device=self.device_info)
         return self._record
+
+
+def annotate_modules(model, timeline):
+    """Name model components in traced updates: every block of a module list, the block's direct children, and
+    the other leaf modules under the root. Outside a trace window each hook only checks a flag."""
+    import torch
+
+    containers = (torch.nn.ModuleList, torch.nn.ModuleDict, torch.nn.Sequential)
+    selected = []
+
+    def walk(module, prefix, in_list):
+        for name, child in module.named_children():
+            path = f"{prefix}{name}"
+            if isinstance(child, containers):
+                walk(child, path + ".", isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)))
+                continue
+            selected.append((path, child))
+            if in_list:
+                selected.extend((f"{path}.{inner}", grandchild) for inner, grandchild in child.named_children())
+
+    walk(model, "", False)
+    open_ranges = {}
+
+    for path, module in selected:
+        label = f"{MODULE_PREFIX}{path}|{type(module).__name__}"
+
+        def enter(module, args, label=label):
+            if timeline.tracing:
+                scope = timeline.annotate(label)
+                scope.__enter__()
+                open_ranges.setdefault(id(module), []).append(scope)
+
+        def leave(module, args, output):
+            scopes = open_ranges.get(id(module))
+            if scopes:
+                scopes.pop().__exit__(None, None, None)
+
+        module.register_forward_pre_hook(enter)
+        module.register_forward_hook(leave)
+    return model
 
 
 def _before(timeline, stage, original):
@@ -211,7 +265,7 @@ def install(trainer, timeline):
         def wrapped(*args, **kwargs):
             built = original(*args, **kwargs)
             built.register_forward_hook(forward_done)
-            return built
+            return annotate_modules(built, timeline)
         return wrapped
 
     def optimizer(original):
@@ -308,8 +362,14 @@ def main(argv=None):
         factory, annotate, trace_dir = _torch_profiler, torch.profiler.record_function, args.profile_dir / "torch"
     elif args.profile_trace == "nsys":
         factory, annotate = _CudaProfilerRange, _NvtxRange
+    memory = (lambda: (torch.cuda.max_memory_allocated(device), torch.cuda.max_memory_reserved(device))) \
+        if device is not None else None
     timeline = Timeline(rank, world, device=device, profile_steps=args.profile_trace_steps, profiler_factory=factory,
-                        trace_dir=trace_dir, annotate=annotate)
+                        trace_dir=trace_dir, annotate=annotate, memory=memory)
+    if device is not None:
+        properties = torch.cuda.get_device_properties(device)
+        timeline.device_info = dict(name=properties.name, major=properties.major, minor=properties.minor,
+                                    sms=properties.multi_processor_count, total_memory=properties.total_memory)
     uninstall = install(trainer, timeline)
     try:
         trainer.main(trainer_argv)

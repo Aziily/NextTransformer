@@ -172,3 +172,80 @@ def test_timeline_profiles_only_the_requested_updates(tmp_path: Path):
     timeline.finish()
     assert profiler.events == ["start", "stop", ("export", "rank_0001.json.gz")]
     assert timeline.finish()["profiled_steps"] == [2]
+
+
+class Recorder:
+    def __init__(self):
+        self.names = []
+
+    def __call__(self, name):
+        recorder = self
+
+        class Range:
+            def __enter__(self):
+                recorder.names.append(("enter", name))
+
+            def __exit__(self, *exc):
+                recorder.names.append(("exit", name))
+
+        return Range()
+
+
+class Block(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.attn = nn.Linear(2, 2)
+        self.mlp = nn.Linear(2, 2)
+
+    def forward(self, x):
+        return self.mlp(self.attn(x))
+
+
+class Net(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.h = nn.ModuleList([Block(), Block()])
+        self.lm_head = nn.Linear(2, 1)
+
+    def forward(self, x, y=None):
+        for block in self.h:
+            x = block(x)
+        return self.lm_head(x).square().mean()
+
+
+def test_module_annotations_cover_blocks_and_their_children_only_in_a_trace_window():
+    from launch.profile_hooks import annotate_modules
+
+    recorder = Recorder()
+    timeline = Timeline(profile_steps=(2, 2), profiler_factory=FakeProfiler, annotate=recorder, clock=counter(),
+                        wall=counter(100.0))
+    model = Net()
+    annotate_modules(model, timeline)
+    timeline.start_step()
+    model(torch.ones(1, 2))
+    assert recorder.names == []
+    timeline.start_step()
+    model(torch.ones(1, 2))
+    names = [name for action, name in recorder.names if action == "enter" and name.startswith("nt.module:")]
+    assert names == ["nt.module:h.0|Block", "nt.module:h.0.attn|Linear", "nt.module:h.0.mlp|Linear",
+                     "nt.module:h.1|Block", "nt.module:h.1.attn|Linear", "nt.module:h.1.mlp|Linear",
+                     "nt.module:lm_head|Linear"]
+    modules = [(action, name) for action, name in recorder.names if name.startswith("nt.module:")]
+    assert sorted(name for action, name in modules if action == "enter") == \
+        sorted(name for action, name in modules if action == "exit")
+
+
+def test_timeline_reads_peak_memory_once_per_update_before_the_next_reset():
+    memory = iter([(10, 20), (30, 40), (50, 60)])
+    timeline = Timeline(clock=counter(), wall=counter(100.0), memory=lambda: next(memory))
+    timeline.start_step()
+    timeline.mark("forward")
+    timeline.mark("step_tail")
+    timeline.mark("validation")
+    timeline.mark("step_tail")
+    timeline.start_step()
+    timeline.mark("step_tail")
+    record = timeline.finish()
+    assert record["steps"][1]["memory"] == {"allocated_peak": 10, "reserved_peak": 20}
+    assert record["steps"][2]["memory"] == {"allocated_peak": 30, "reserved_peak": 40}
+    assert "memory" not in record["steps"][0]

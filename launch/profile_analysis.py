@@ -1,25 +1,20 @@
-"""Turn profiler stage timelines and traces into stage, kernel and wall-clock breakdowns.
+"""Turn profiler stage timelines into stage, wall-clock, memory and MFU summaries and findings.
 
-Everything here is pure Python on files the profiler wrote: per-rank stage timelines from ``launch.profile_hooks``,
-PyTorch profiler (Kineto) traces, and the SQLite export of an Nsight Systems report. Nothing imports torch.
+Everything here is pure Python on files the profiler wrote: per-rank stage timelines from ``launch.profile_hooks``
+and the trace summary of ``launch.profile_trace``. Nothing imports torch.
 """
 
 from __future__ import annotations
 
-from bisect import bisect_right
 from collections import defaultdict
-import gzip
 import json
 from pathlib import Path
-import sqlite3
 import statistics
+
+from launch.profile_trace import SMALL_KERNEL_S
 
 
 EVENT_STAGES = ("validation", "core", "checkpoint")
-STAGE_PREFIX = "nt.stage:"
-SMALL_KERNEL_S = 10e-6
-TREE_OPERATORS = 15
-TREE_KERNELS = 8
 
 
 # Stage timelines -------------------------------------------------------------------------------------------------
@@ -121,314 +116,134 @@ def steady_interval(record, warmup_steps):
     return steps[0]["segments"][0]["start_wall"], last["start_wall"] + last["host_s"]
 
 
-# Kernel classification --------------------------------------------------------------------------------------------
+# Hardware peak and MFU --------------------------------------------------------------------------------------------
 
-_CATEGORIES = (
-    ("communication", ("nccl",)),
-    ("memory", ("memcpy", "memset")),
-    ("attention", ("flash", "fmha", "attention", "sdpa")),
-    ("gemm", ("gemm", "cutlass", "xmma", "cublas", "matmul")),
-    ("fused", ("triton",)),
-    ("optimizer", ("multi_tensor_apply", "foreach", "adam", "muon")),
-    ("normalization", ("norm",)),
-    ("softmax", ("softmax",)),
-    ("reduction", ("reduce", "reduction")),
-    ("elementwise", ("elementwise", "unrolled", "vectorized", "fill", "pointwise")),
-    ("copy", ("cat", "copy", "index", "gather", "scatter", "embedding", "transpose")),
-)
+# Dense BF16 tensor FLOPs per SM and clock with FP32 accumulation. GeForce boards of these architectures run
+# FP32-accumulating tensor math at half the rate of the professional boards.
+_TENSOR_FLOPS_PER_CLOCK = {(8, 0): 2048, (8, 6): 1024, (8, 7): 1024, (8, 9): 1024, (9, 0): 4096}
+_HALF_RATE_ON_GEFORCE = {(8, 6), (8, 9)}
+# Specification boost clocks (MHz) of known configurations, keyed by architecture, SM count and board family.
+_BOOST_MHZ = {(8, 0, 108, False): 1410, (8, 6, 82, True): 1695, (8, 6, 84, True): 1860, (8, 6, 84, False): 1800,
+              (8, 6, 68, True): 1710, (8, 9, 128, True): 2520, (8, 9, 142, False): 2520, (9, 0, 132, False): 1830,
+              (9, 0, 114, False): 1755}
 
 
-def classify_kernel(name):
-    """Coarse GPU activity category from a kernel or memory operation name."""
-    lowered = name.lower()
-    for category, needles in _CATEGORIES:
-        if any(needle in lowered for needle in needles):
-            return category
-    return "other"
+def hardware_peak(device, observed_mhz=None, override_tflops=None):
+    """Dense BF16 tensor peak per GPU from its architecture, SM count and clock, with the basis of the number."""
+    if override_tflops:
+        return dict(dense_bf16_flops=override_tflops * 1e12, observed_clock_flops=None,
+                    basis=f"--peak-tflops {override_tflops:g}")
+    if not device:
+        return dict(dense_bf16_flops=None, observed_clock_flops=None, basis="no device information")
+    arch = (device["major"], device["minor"])
+    per_clock = _TENSOR_FLOPS_PER_CLOCK.get(arch)
+    if per_clock is None:
+        return dict(dense_bf16_flops=None, observed_clock_flops=None,
+                    basis=f"sm{arch[0]}{arch[1]} is not in the tensor-rate table; pass --peak-tflops")
+    geforce = "geforce" in device.get("name", "").lower()
+    if geforce and arch in _HALF_RATE_ON_GEFORCE:
+        per_clock //= 2
+    boost = _BOOST_MHZ.get((*arch, device["sms"], geforce))
+    clock, source = (boost, "specification boost clock") if boost else (device.get("max_mhz"), "maximum SM clock")
+    if not clock:
+        return dict(dense_bf16_flops=None, observed_clock_flops=None, basis="unknown SM clock; pass --peak-tflops")
+    peak = device["sms"] * per_clock * clock * 1e6
+    return dict(dense_bf16_flops=peak,
+                observed_clock_flops=device["sms"] * per_clock * observed_mhz * 1e6 if observed_mhz else None,
+                basis=f"sm{arch[0]}{arch[1]}: {device['sms']} SMs × {per_clock} FLOP/clock × {clock:.0f} MHz ({source})")
 
 
-def _template_args(text):
-    """Top-level template arguments of ``text`` that starts at its opening ``<``."""
-    args, depth, start = [], 0, 1
-    for index, char in enumerate(text):
-        if char == "<":
-            depth += 1
-        elif char == ">":
-            depth -= 1
-            if depth == 0:
-                args.append(text[start:index].strip())
-                break
-        elif char == "," and depth == 1:
-            args.append(text[start:index].strip())
-            start = index + 1
-    return args
-
-
-def short_kernel_name(name):
-    """Drop the return type, call signature and template arguments unless they name the kernel."""
-    text = (name[5:] if name.startswith("void ") else name).replace("(anonymous namespace)::", "")
-    depth = 0
-    for index, char in enumerate(text):
-        if char in "<":
-            depth += 1
-        elif char == ">":
-            depth -= 1
-        elif char == "(" and depth == 0:
-            text = text[:index]
-            break
-    base, bracket, rest = text.partition("<")
-    if not bracket:
-        return base
-    if base.rsplit("::", 1)[-1].startswith("Kernel"):
-        args = _template_args(bracket + rest)
-        if args:
-            return args[0]
-    return base
-
-
-def _kind(category):
-    return category if category in ("communication", "memory") else "compute"
-
-
-def _union(intervals):
-    merged = []
-    for start, end in sorted(intervals):
-        if merged and start <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], end)
-        else:
-            merged.append([start, end])
-    return merged
-
-
-def _length(intervals):
-    return sum(end - start for start, end in intervals)
-
-
-def _intersection(left, right):
-    result, i, j = [], 0, 0
-    while i < len(left) and j < len(right):
-        start, end = max(left[i][0], right[j][0]), min(left[i][1], right[j][1])
-        if start < end:
-            result.append([start, end])
-        if left[i][1] < right[j][1]:
-            i += 1
-        else:
-            j += 1
+def phase_flops(proof, token_share):
+    """Audited FLOPs of one update split by phase; forward and backward scale with the update's share of the formal
+    tokens, the optimizer runs once per update. ``None`` unless the proof has a single training stage."""
+    stages = proof.get("stages") or []
+    if len(stages) != 1 or "cost" not in stages[0]:
+        return None
+    cost = stages[0]["cost"]
+    phases = cost["phases"]
+    matrix = defaultdict(float)
+    for name, operator in cost.get("operators", {}).items():
+        matrix[name.split("/", 1)[0]] += operator.get("matrix", 0)
+    result = dict(forward=phases["forward"] * token_share, backward=phases["backward"] * token_share,
+                  optimizer=float(phases.get("optimizer", 0)))
+    result["total"] = result["forward"] + result["backward"] + result["optimizer"]
+    result["matrix"] = (matrix["forward"] + matrix["backward"]) * token_share + matrix["optimizer"]
     return result
 
 
-def busy_breakdown(intervals):
-    """Busy, overlapped and idle time of one GPU from ``(start, end, kind)`` activity intervals."""
-    if not intervals:
-        return dict(window_s=0.0, compute_s=0.0, communication_s=0.0, overlap_s=0.0, memory_s=0.0, idle_s=0.0,
-                    exposed_communication_s=0.0)
-    by_kind = {kind: _union([(start, end) for start, end, k in intervals if k == kind])
-               for kind in ("compute", "communication", "memory")}
-    window = max(end for _, end, _ in intervals) - min(start for start, _, _ in intervals)
-    overlap = _length(_intersection(by_kind["compute"], by_kind["communication"]))
-    communication = _length(by_kind["communication"])
-    busy = _length(_union([(start, end) for start, end, _ in intervals]))
-    return dict(window_s=window, compute_s=_length(by_kind["compute"]), communication_s=communication,
-                overlap_s=overlap, memory_s=_length(by_kind["memory"]), idle_s=window - busy,
-                exposed_communication_s=communication - overlap)
-
-
-# Trace aggregation ------------------------------------------------------------------------------------------------
-
-def _node(name):
-    return {"name": name, "seconds": 0.0, "count": 0, "children": {}}
-
-
-def _finish_tree(nodes, scale, depth=0):
-    limit = (None, None, TREE_OPERATORS, TREE_KERNELS)[min(depth, 3)]
-    ordered = sorted(nodes.values(), key=lambda node: node["seconds"], reverse=True)
-    kept = ordered if limit is None else ordered[:limit]
-    result = []
-    for node in kept:
-        result.append(dict(name=node["name"], seconds=node["seconds"] * scale, count=node["count"] * scale,
-                           children=_finish_tree(node["children"], scale, depth + 1)))
-    rest = ordered[len(kept):]
-    if rest:
-        result.append(dict(name=f"{len(rest)} more", seconds=sum(node["seconds"] for node in rest) * scale,
-                           count=sum(node["count"] for node in rest) * scale, children=[]))
+def mfu_summary(flops, world, step_seconds, stages, trace, peak, clock_peak=None):
+    """Model FLOPs utilization of the update and its phases, matrix-kernel efficiency, and where time goes beyond the
+    ideal update at peak (from the traced GPU activity)."""
+    if not flops or not step_seconds:
+        return None
+    achieved = flops["total"] / world / step_seconds
+    result = dict(achieved_flops=achieved, mfu=achieved / peak if peak else None, peak_flops=peak,
+                  clock_peak_flops=clock_peak, clock_mfu=achieved / clock_peak if clock_peak else None, phases=[],
+                  kernels=[], waterfall=[])
+    rows = {row["stage"]: row["seconds"] for row in stages.get("stages", [])}
+    timed = dict(forward=rows.get("forward", 0.0), backward=rows.get("backward", 0.0),
+                 optimizer=sum(value for name, value in rows.items() if name.startswith("optimizer.")))
+    for phase, seconds in timed.items():
+        rate = flops[phase] / world / seconds if seconds else None
+        result["phases"].append(dict(phase=phase, seconds=seconds, flops=flops[phase] / world, achieved_flops=rate,
+                                     mfu=rate / peak if rate and peak else None))
+    other = (stages.get("step_seconds") or step_seconds) - sum(timed.values())
+    result["phases"].append(dict(phase="rest of the update", seconds=other, flops=0.0, achieved_flops=None, mfu=None))
+    gpus = (trace or {}).get("per_gpu") or []
+    if not gpus:
+        return result
+    traced = max((trace or {}).get("steps", 1), 1)
+    mean = {key: statistics.mean(row[key] for row in gpus) / traced for key in
+            ("window_s", "compute_s", "exposed_communication_s", "exposed_memory_s", "idle_s", "gemm_s", "attention_s")}
+    measured = {}
+    for kind in ("gemm", "attention"):
+        values = [row.get(f"{kind}_flops") for row in gpus]
+        measured[kind] = statistics.mean(values) / traced if all(value is not None for value in values) else None
+        rate = measured[kind] / mean[f"{kind}_s"] if measured[kind] and mean[f"{kind}_s"] else None
+        result["kernels"].append(dict(kind=kind, seconds=mean[f"{kind}_s"], flops=measured[kind],
+                                      tflops=rate / 1e12 if rate else None,
+                                      efficiency=rate / peak if rate and peak else None,
+                                      clock_efficiency=rate / clock_peak if rate and clock_peak else None))
+    if not peak:
+        return result
+    parts = [("ideal", flops["total"] / world / peak)]
+    matrix_s = mean["gemm_s"] + mean["attention_s"]
+    if measured["gemm"] is not None and measured["attention"] is not None:
+        matrix_flops = measured["gemm"] + measured["attention"]
+        parts += [("gemm below peak", mean["gemm_s"] - measured["gemm"] / peak),
+                  ("attention below peak", mean["attention_s"] - measured["attention"] / peak)]
+    else:
+        matrix_flops = flops["matrix"] / world
+        parts.append(("matrix kernels below peak", matrix_s - matrix_flops / peak))
+    parts += [("other compute kernels", mean["compute_s"] - matrix_s - (flops["total"] / world - matrix_flops) / peak),
+              ("exposed communication", mean["exposed_communication_s"]),
+              ("exposed memory copies", mean["exposed_memory_s"]), ("idle", mean["idle_s"])]
+    window = mean["window_s"] or 1.0
+    result["waterfall"] = [dict(part=part, seconds=seconds, share=seconds / window) for part, seconds in parts]
+    categories = (trace or {}).get("categories") or {}
+    other = [dict(category=name, seconds=seconds) for name, seconds in categories.items()
+             if name not in ("gemm", "attention", "communication", "memory") and seconds > 0]
+    for row in result["waterfall"]:
+        if row["part"] == "other compute kernels" and other:
+            row["detail"] = sorted(other, key=lambda item: item["seconds"], reverse=True)
+    result["traced_window_s"] = mean["window_s"]
     return result
 
 
-class _Aggregate:
-    """Accumulates attributed GPU activities into the report's tree, kernel table and per-GPU breakdown."""
-
-    def __init__(self):
-        self.tree, self.kernels = {}, {}
-        self.per_gpu = defaultdict(list)
-        self.count = self.small = 0
-        self.total = self.small_total = 0.0
-
-    def add(self, gpu, start, end, name, stage, operator=None):
-        seconds = end - start
-        category = classify_kernel(name)
-        short = short_kernel_name(name)
-        self.per_gpu[gpu].append((start, end, _kind(category)))
-        path = [stage, category] + ([operator] if operator is not None else []) + [short]
-        level = self.tree
-        for part in path:
-            node = level.setdefault(part, _node(part))
-            node["seconds"] += seconds
-            node["count"] += 1
-            level = node["children"]
-        kernel = self.kernels.setdefault(short, dict(name=short, category=category, count=0, seconds=0.0))
-        kernel["count"] += 1
-        kernel["seconds"] += seconds
-        if category != "memory":
-            self.count += 1
-            self.total += seconds
-            if seconds < SMALL_KERNEL_S:
-                self.small += 1
-                self.small_total += seconds
-
-    def result(self, source, steps, ranks):
-        scale = 1 / (max(steps, 1) * max(ranks, 1))
-        per_gpu = [dict(gpu=gpu, **busy_breakdown(rows), kernels=len(rows)) for gpu, rows in sorted(self.per_gpu.items())]
-        kernels = sorted(self.kernels.values(), key=lambda row: row["seconds"], reverse=True)[:20]
-        return dict(
-            source=source, steps=steps, ranks=ranks, per_gpu=per_gpu, tree=_finish_tree(self.tree, scale),
-            top_kernels=[dict(row, count=row["count"] * scale, seconds=row["seconds"] * scale,
-                              mean_us=1e6 * row["seconds"] / row["count"]) for row in kernels],
-            small_kernels=dict(count_share=self.small / self.count if self.count else 0.0,
-                               time_share=self.small_total / self.total if self.total else 0.0),
-        )
-
-
-class _Stages:
-    """Stage lookup by launch time within one process."""
-
-    def __init__(self, ranges):
-        self.ranges = sorted(ranges)
-        self.starts = [start for start, _, _ in self.ranges]
-
-    def at(self, time):
-        index = bisect_right(self.starts, time) - 1
-        if index >= 0 and time <= self.ranges[index][1]:
-            return self.ranges[index][2]
-        return "unattributed"
-
-
-_SKIP_OPERATORS = ("##", "ProfilerStep", "Optimizer.", "DistributedDataParallel", STAGE_PREFIX)
-# DDP launches its gradient all-reduce from autograd hooks inside other operators; name the collective instead.
-_COLLECTIVES = ("nccl:", "c10d::")
-_BACKWARD_PREFIX = "autograd::engine::evaluate_function: "
-
-
-def _operator_name(event):
-    name = event["name"].removeprefix(_BACKWARD_PREFIX)
-    dims = [dim for dim in event.get("args", {}).get("Input Dims", []) if dim]
-    if dims:
-        name += " " + " · ".join("[" + ", ".join(map(str, dim)) + "]" for dim in dims)
-    return name
-
-
-def _top_level(rows):
-    """Outermost operators of one thread from ``(start, end, event)`` rows sorted by start."""
-    top = []
-    for row in rows:
-        if not top or row[0] >= top[-1][1]:
-            top.append(row)
-    return [row[0] for row in top], top
-
-
-def _outermost(ops, time):
-    """The outermost operator of one thread running at ``time``."""
-    index = bisect_right(ops[0], time) - 1
-    if index >= 0 and time <= ops[1][index][1]:
-        return ops[1][index][2]
-    return None
-
-
-def analyze_torch_traces(paths, steps):
-    """Stage → category → operator → kernel breakdown of PyTorch profiler traces, one file per rank."""
-    aggregate = _Aggregate()
-    for path in paths:
-        with gzip.open(path, "rt") if str(path).endswith(".gz") else open(path) as handle:
-            events = json.load(handle)["traceEvents"]
-        stage_ranges, threads, launches, device = defaultdict(list), defaultdict(list), {}, []
-        for event in events:
-            if event.get("ph") != "X":
-                continue
-            category, name = event.get("cat", ""), event.get("name", "")
-            start, end = event["ts"], event["ts"] + event.get("dur", 0)
-            if category == "user_annotation" and name.startswith(STAGE_PREFIX):
-                stage_ranges[event["pid"]].append((start, end, name[len(STAGE_PREFIX):]))
-            elif category == "cpu_op" and not name.startswith(_SKIP_OPERATORS):
-                threads[(event["pid"], event["tid"])].append((start, end, event))
-            elif category in ("cuda_runtime", "cuda_driver") and "correlation" in event.get("args", {}):
-                launches[event["args"]["correlation"]] = event
-            elif category in ("kernel", "gpu_memcpy", "gpu_memset"):
-                device.append(event)
-        stages = {pid: _Stages(ranges) for pid, ranges in stage_ranges.items()}
-        ops = {key: _top_level(sorted(rows, key=lambda row: row[0])) for key, rows in threads.items()}
-        collectives = {key: _top_level(sorted((row for row in rows if row[2]["name"].startswith(_COLLECTIVES)),
-                                              key=lambda row: row[0])) for key, rows in threads.items()}
-        for event in device:
-            args = event.get("args", {})
-            launch = launches.get(args.get("correlation"))
-            stage, operator = "unattributed", "(no operator)"
-            if launch is not None:
-                if launch["pid"] in stages:
-                    stage = stages[launch["pid"]].at(launch["ts"])
-                key = (launch["pid"], launch["tid"])
-                found = None
-                if classify_kernel(event["name"]) == "communication" and collectives.get(key, ([], []))[0]:
-                    found = _outermost(collectives[key], launch["ts"])
-                if found is None and ops.get(key, ([], []))[0]:
-                    found = _outermost(ops[key], launch["ts"])
-                if found is not None:
-                    operator = _operator_name(found)
-            start = event["ts"] * 1e-6
-            aggregate.add(args.get("device", event.get("pid")), start, start + event.get("dur", 0) * 1e-6,
-                          event["name"], stage, operator)
-    return aggregate.result("torch", steps, len(paths))
-
-
-_MEMCPY_KINDS = {1: "HtoD", 2: "DtoH", 8: "DtoD", 10: "PtoP"}
-
-
-def analyze_nsys_sqlite(path, steps):
-    """Stage → category → kernel breakdown of an Nsight Systems SQLite export covering every rank."""
-    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        ranges = defaultdict(list)
-        if "NVTX_EVENTS" in tables:
-            for start, end, tid, text in db.execute(
-                    "SELECT e.start, e.end, e.globalTid, coalesce(e.text, s.value) FROM NVTX_EVENTS e "
-                    "LEFT JOIN StringIds s ON s.id = e.textId WHERE e.eventType = 59"):
-                if text and text.startswith(STAGE_PREFIX) and end is not None:
-                    ranges[tid >> 24].append((start, end, text[len(STAGE_PREFIX):]))
-        stages = {process: _Stages(rows) for process, rows in ranges.items()}
-        aggregate, ranks = _Aggregate(), set()
-
-        def attribute(process, launched):
-            return stages[process].at(launched) if launched is not None and process in stages else "unattributed"
-
-        for start, end, gpu, name, launched, process in db.execute(
-                "SELECT k.start, k.end, k.deviceId, s.value, r.start, k.globalPid >> 24 "
-                "FROM CUPTI_ACTIVITY_KIND_KERNEL k LEFT JOIN StringIds s ON s.id = k.demangledName "
-                "LEFT JOIN CUPTI_ACTIVITY_KIND_RUNTIME r ON r.correlationId = k.correlationId "
-                "AND r.globalTid >> 24 = k.globalPid >> 24"):
-            ranks.add(process)
-            aggregate.add(gpu, start * 1e-9, end * 1e-9, name or "unknown kernel", attribute(process, launched))
-        for table, label in (("CUPTI_ACTIVITY_KIND_MEMCPY", "Memcpy"), ("CUPTI_ACTIVITY_KIND_MEMSET", "Memset")):
-            if table not in tables:
-                continue
-            kind = "m.copyKind" if label == "Memcpy" else "0"
-            for start, end, gpu, copy, launched, process in db.execute(
-                    f"SELECT m.start, m.end, m.deviceId, {kind}, r.start, m.globalPid >> 24 FROM {table} m "
-                    "LEFT JOIN CUPTI_ACTIVITY_KIND_RUNTIME r ON r.correlationId = m.correlationId "
-                    "AND r.globalTid >> 24 = m.globalPid >> 24"):
-                name = f"{label} {_MEMCPY_KINDS.get(copy, '')}".strip()
-                aggregate.add(gpu, start * 1e-9, end * 1e-9, name, attribute(process, launched))
-    finally:
-        db.close()
-    return aggregate.result("nsys", steps, len(ranks))
+def memory_summary(records, warmup_steps, total_bytes):
+    """Peak allocated and reserved memory of each rank over steady updates, and the smallest headroom."""
+    per_rank = []
+    for record in records:
+        values = [step["memory"] for step in _steady(record, warmup_steps) if step.get("memory")]
+        if values:
+            per_rank.append(dict(rank=record["rank"], allocated_peak=max(value["allocated_peak"] for value in values),
+                                 reserved_peak=max(value["reserved_peak"] for value in values)))
+    if not per_rank:
+        return None
+    reserved = max(row["reserved_peak"] for row in per_rank)
+    return dict(per_rank=per_rank, total_bytes=total_bytes, allocated_peak=max(row["allocated_peak"] for row in per_rank),
+                reserved_peak=reserved, headroom_bytes=total_bytes - reserved if total_bytes else None,
+                reserved_share=reserved / total_bytes if total_bytes else None)
 
 
 # Projection and diagnosis -----------------------------------------------------------------------------------------
@@ -475,9 +290,17 @@ def _finding(identifier, severity, title, detail):
     return dict(id=identifier, severity=severity, title=title, detail=detail)
 
 
-def diagnose(stages, trace, projection, accounting, telemetry, peak_memory_bytes, memory_total_bytes):
+def diagnose(stages, trace, projection, accounting, telemetry, peak_memory_bytes, memory_total_bytes, mfu=None):
     """Ordered findings a reader should check first; each names the evidence it comes from."""
     findings = []
+    waterfall = {row["part"]: row for row in (mfu or {}).get("waterfall", [])}
+    losses = [row for name, row in waterfall.items() if name != "ideal" and row["share"] > 0.08]
+    if losses:
+        worst = max(losses, key=lambda row: row["seconds"])
+        findings.append(_finding(
+            "largest-mfu-loss", "warning", f"Largest MFU loss: {worst['part']}",
+            f"{worst['part'].capitalize()} costs {worst['seconds']:.2f} s ({worst['share']:.0%}) of the traced update "
+            f"beyond the ideal {waterfall['ideal']['seconds']:.2f} s at peak; MFU is {mfu['mfu']:.0%}."))
     if projection and not projection["representative"]:
         findings.append(_finding(
             "unrepresentative-update", "warning", "Update shape differs from formal training",
@@ -488,11 +311,15 @@ def diagnose(stages, trace, projection, accounting, telemetry, peak_memory_bytes
     gpus = (trace or {}).get("per_gpu", [])
     if gpus:
         gpu = _mean_gpu(gpus)
-        if gpu["window_s"] and gpu["exposed_communication_s"] / gpu["window_s"] > 0.2:
+        exposed = gpu["exposed_communication_s"] / gpu["window_s"] if gpu["window_s"] else 0.0
+        if exposed > 0.05:
+            rows = sorted(trace.get("communication") or [], key=lambda row: row["exposed_s"], reverse=True)[:2]
+            where = "; ".join(f"{row['collective']} {row['dtype']} in {row['stage']} {row['exposed_s']:.2f} s" for row in rows)
             findings.append(_finding(
-                "exposed-communication", "warning", "Communication is not hidden behind compute",
-                f"{gpu['exposed_communication_s'] / gpu['window_s']:.0%} of the traced window runs communication "
-                f"kernels with no compute kernel alongside (overlap {gpu['overlap_s'] / gpu['window_s']:.0%})."))
+                "exposed-communication", "warning" if exposed > 0.2 else "info",
+                "Communication is not hidden behind compute",
+                f"{exposed:.0%} of the traced window runs communication kernels with no compute kernel alongside "
+                f"({gpu['exposed_communication_s']:.2f} s per update{'; largest: ' + where if where else ''})."))
         if gpu["window_s"] and gpu["idle_s"] / gpu["window_s"] > 0.15:
             findings.append(_finding(
                 "gpu-idle", "warning", "GPUs are idle inside the traced updates",
@@ -515,6 +342,31 @@ def diagnose(stages, trace, projection, accounting, telemetry, peak_memory_bytes
     if optimizer > 0.25:
         findings.append(_finding("optimizer-heavy", "info", "The optimizer step is a large share of the update",
                                  f"Optimizer phases take {optimizer:.0%} of the update."))
+    syncs = [row for row in (trace or {}).get("syncs", []) if row["seconds"] > 0.01]
+    micro = ((trace or {}).get("launch") or {}).get("micro_batches") or 0
+    looped = [row for row in syncs if micro and row["calls"] >= micro and row["stage"] in ("forward", "backward", "data")]
+    if looped:
+        # A blocking call per micro-batch drains the launch queue, so its cost is the host-late idle time it allows.
+        row = max(looped, key=lambda row: row["seconds"])
+        host_idle = ((trace or {}).get("idle") or {}).get("host_s") or 0.0
+        share = host_idle / step if step else 0.0
+        findings.append(_finding(
+            "host-sync", "warning" if share > 0.03 else "info", "The host waits for the GPU in every micro-batch",
+            f"{row['api']} from {row['source']} runs {row['calls']:.0f} times per update during {row['stage']}, so the host "
+            f"never queues work ahead of the GPU ({row['seconds']:.2f} s blocked per update). GPUs wait for a late host "
+            f"{host_idle:.2f} s per update ({share:.1%}); removing the sync would mostly save that."))
+    matrix = [row for row in (trace or {}).get("gemm", []) if row.get("tflops")]
+    if mfu and mfu.get("peak_flops") and len(matrix) > 2:
+        median = statistics.median(row["tflops"] for row in matrix)
+        lost = [(row["seconds"] - row["flops"] / (median * 1e12), row) for row in matrix if row["tflops"] < 0.8 * median]
+        if lost:
+            seconds, row = max(lost, key=lambda pair: pair[0])
+            if seconds > 0.01 * (stages.get("step_seconds") or 1):
+                findings.append(_finding(
+                    "slow-matrix-shape", "warning", "One matrix shape runs well below the others",
+                    f"{row['op']} {row['shape']} in {row['stage']} runs at {row['tflops']:.0f} TFLOP/s, against a median of "
+                    f"{median:.0f} over all matrix shapes; at the median it would save {seconds:.2f} s per update "
+                    f"({row['calls']:.0f} calls, kernel {row['kernel']})."))
     small = (trace or {}).get("small_kernels")
     if small and small["count_share"] > 0.5:
         findings.append(_finding(

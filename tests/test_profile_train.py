@@ -364,3 +364,73 @@ def test_summarize_telemetry_reports_per_gpu_over_the_steady_interval(tmp_path: 
     assert result["per_gpu"][0]["gpu_util_mean_pct"] == 90
     assert result["steady_offsets"] == [5.0, 15.0]
     assert len(result["samples"]) == 3
+
+
+MFU_SUMMARY = {
+    "achieved_flops": 38.1e12, "mfu": 0.535, "peak_flops": 71.2e12, "clock_peak_flops": 78.7e12, "clock_mfu": 0.484,
+    "phases": [{"phase": "forward", "seconds": 5.0, "flops": 2e14, "achieved_flops": 4e13, "mfu": 0.56},
+               {"phase": "backward", "seconds": 10.5, "flops": 4e14, "achieved_flops": 3.8e13, "mfu": 0.53},
+               {"phase": "optimizer", "seconds": 0.4, "flops": 3e12, "achieved_flops": 7.5e12, "mfu": 0.1},
+               {"phase": "rest of the update", "seconds": 0.2, "flops": 0.0, "achieved_flops": None, "mfu": None}],
+    "kernels": [{"kind": "gemm", "seconds": 8.6, "flops": 5.5e14, "tflops": 64.4, "efficiency": 0.9,
+                 "clock_efficiency": 0.82},
+                {"kind": "attention", "seconds": 1.35, "flops": 5.7e13, "tflops": 42.1, "efficiency": 0.59,
+                 "clock_efficiency": 0.53}],
+    "waterfall": [{"part": "ideal", "seconds": 8.6, "share": 0.535},
+                  {"part": "gemm below peak", "seconds": 0.8, "share": 0.05},
+                  {"part": "other compute kernels", "seconds": 4.6, "share": 0.29},
+                  {"part": "exposed communication", "seconds": 1.0, "share": 0.06}],
+    "traced_window_s": 16.07,
+}
+COMMUNICATION = [{"collective": "all_reduce", "dtype": "Float", "stage": "backward",
+                  "kernel": "ncclDevKernel_AllReduce_Sum_f32_RING_LL", "calls": 71, "seconds": 0.57, "exposed_s": 0.44,
+                  "bytes": 2.8e9, "ranks": 8, "algbw_gbps": 4.9, "busbw_gbps": 8.6}]
+GEMM = [{"kind": "gemm", "stage": "forward", "op": "aten::mm", "shape": "2048×1536 · 1536×1536",
+         "dtype": "c10::BFloat16", "calls": 5888, "seconds": 1.31, "flops": 5.7e13, "tflops": 43.3,
+         "kernel": "cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8"}]
+COMPONENTS = [{"name": "attn", "forward_s": 1.5, "backward_s": 2.8, "flops": 1.4e14,
+               "layers": [{"layer": 0, "forward_s": 0.07, "backward_s": 0.12}]}]
+TIMELINE = [{"name": "update", "start_s": 0.0, "seconds": 16.07, "buckets": 4, "lanes": {
+    "stage": [[0, 2, "forward", 1.0], [2, 4, "backward", 1.0]], "compute": [[0, 3, "gemm", 0.9]],
+    "communication": [[3, 4, "all_reduce", 0.5]], "memory": []}}]
+
+
+def rich_summary():
+    summary = full_summary()
+    summary["hardware"] = {"device": {"name": "Example GPU", "major": 8, "minor": 6, "sms": 82},
+                           "dense_bf16_flops": 71.2e12, "observed_clock_flops": 78.7e12,
+                           "basis": "sm86: 82 SMs × 512 FLOP/clock × 1695 MHz (specification boost clock)"}
+    summary["mfu_summary"] = MFU_SUMMARY
+    summary["memory_summary"] = {"per_rank": [{"rank": 0, "allocated_peak": 18 * 2**30, "reserved_peak": 20 * 2**30}],
+                                 "total_bytes": 24 * 2**30, "allocated_peak": 18 * 2**30, "reserved_peak": 20 * 2**30,
+                                 "headroom_bytes": 4 * 2**30, "reserved_share": 20 / 24}
+    summary["trace_summary"] = dict(TRACE_SUMMARY, communication=COMMUNICATION, gemm=GEMM, components=COMPONENTS,
+                                    timeline=TIMELINE, syncs=[{"api": "cudaStreamSynchronize", "source": "aten::to",
+                                                               "stage": "backward", "calls": 64, "seconds": 4.58}],
+                                    launch={"api_calls": 195255, "kernels": 195255, "memory_ops": 17118, "host_s": 2.8,
+                                            "micro_batches": 64, "per_micro_batch": 3050.9},
+                                    idle={"total_s": 0.39, "host_s": 0.21, "launch_s": 0.01, "dependency_s": 0.17,
+                                          "gaps": 209665, "largest": [{"gpu": 0, "seconds": 0.024, "start_s": 7.2,
+                                                                        "cause": "host", "stage": "data",
+                                                                        "next": "Memcpy HtoD"}]})
+    return summary
+
+
+def test_render_report_shows_mfu_waterfall_and_phase_efficiency():
+    html = render_report(rich_summary())
+    assert 'id="mfu"' in html and "53.5%" in html and "38.1 TFLOP/s" in html
+    assert "71.2 TFLOP/s" in html and "sm86: 82 SMs" in html
+    assert 'data-part="other compute kernels"' in html and "4.60 s" in html
+    assert "Forward" in html and "56.0%" in html
+    assert "64.4 TFLOP/s" in html and "90.0%" in html
+
+
+def test_render_report_shows_communication_scheduling_matrices_components_memory_and_timeline():
+    html = render_report(rich_summary())
+    assert 'id="communication"' in html and "8.6 GB/s" in html and "440.0 ms" in html
+    assert 'id="scheduling"' in html and "3,051 kernels per micro-batch" in html and "aten::to" in html
+    assert 'id="matrix-shapes"' in html and "2048×1536 · 1536×1536" in html and "43.3" in html
+    assert 'id="components"' in html and "attn" in html and "layer 0" in html
+    assert 'id="memory"' in html and "20.00 GiB" in html and "4.00 GiB" in html
+    assert 'id="timeline"' in html and html.count('class="lane"') == 4
+    assert 'data-lane="communication" data-label="all_reduce"' in html
