@@ -14,10 +14,12 @@ the frozen protocol.
 `--accept-baseline` records the maintainer's acceptance of a finished `dense_full` run as the
 Dense baseline that every relative comparison uses. It needs the run's cumulative audit, and
 `--check` allows one accepted baseline whose acceptance matches the run's provenance.
+Existing records are immutable: an identical export is a no-op; a different run needs a new --file.
 """
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -58,10 +60,20 @@ def read_run(path):
                 core_final_mtime=os.path.getmtime(run/"core_final.json"), provenance=provenance)
 
 
+def check_metric(value, label):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{label}: expected a finite numeric metric")
+
+
 def check_core(name, step, raw, centered, aggregate, tasks):
+    check_metric(aggregate, f"{name}: CORE aggregate at {step}")
+    if not isinstance(raw, dict) or not isinstance(centered, dict):
+        raise ValueError(f"{name}: CORE at {step} needs raw and centered task scores")
     if set(raw) != set(tasks) or set(centered) != set(tasks):
         raise ValueError(f"{name}: CORE at {step} is not the full {len(tasks)}-task evaluation")
     for task, base in tasks.items():
+        check_metric(raw[task], f"{name}: {task} raw score at {step}")
+        check_metric(centered[task], f"{name}: {task} centered score at {step}")
         if abs((raw[task]-base)/(1-base)-centered[task]) > 1e-7: raise ValueError(f"{name}: {task} centering at {step}")
     if abs(sum(centered.values())/len(tasks)-aggregate) > 1e-7: raise ValueError(f"{name}: CORE aggregate at {step}")
 
@@ -71,6 +83,9 @@ def record(raw, method, name, audit=None, commit=None, cohort="reference-v1", ac
     tasks = core_baselines(); p = raw["provenance"][0]; last = raw["last"]
     val = [dict(step=int(s), value=v) for s, v in raw["val"]]
     if [x["step"] for x in val] != VAL_STEPS: raise ValueError(f"{method}: incomplete validation schedule")
+    for point in val:
+        check_metric(point["value"], f"{method}: validation BPB at {point['step']}")
+    check_metric(raw["final_bpb"]["val_bpb"], f"{method}: final BPB")
     core, evaluations = [], []
     for step, c in raw["core"]:
         if not c["full_core"]: raise ValueError(f"{method}: CORE at {step} is a smoke evaluation")
@@ -129,12 +144,27 @@ def check(root=RESULTS):
         if any(k in r for k in ("entity", "project", "trackingState")): problems.append(f"{name}: tracking-service fields")
         proof = r.get("proof") or {}
         if proof.get("tokenizer_sha256") not in (None, TOKENIZER_SHA256): problems.append(f"{name}: tokenizer differs from the pinned one")
+        try:
+            for kind in ("val", "core"):
+                for point in r[kind]:
+                    check_metric(point["value"], f"{name}: {kind} at {point['step']}")
+            if "finalBpb" in r:
+                check_metric(r["finalBpb"], f"{name}: final BPB")
+        except (ValueError, KeyError, TypeError) as error:
+            problems.append(f"{name}: invalid metrics: {error}")
+            continue
         if r["status"] == "finished" and r["cohort"] in ("reference-v1", FROZEN_COHORT):
             if [x["step"] for x in r["val"]] != VAL_STEPS or [x["step"] for x in r["core"]] != CORE_STEPS:
                 problems.append(f"{name}: finished run without the complete evaluation schedule")
-            for e, c in zip(r.get("taskEvaluations", []), r["core"]):
-                try: check_core(name, e["step"], e["raw"], e["centered"], c["value"], tasks)
-                except ValueError as error: problems.append(str(error))
+            evaluations = r.get("taskEvaluations")
+            try:
+                if not isinstance(evaluations, list) or [e["step"] for e in evaluations] != CORE_STEPS:
+                    raise ValueError("taskEvaluations must cover every scheduled CORE step exactly once, in order")
+                aggregates = {point["step"]: point["value"] for point in r["core"]}
+                for e in evaluations:
+                    check_core(name, e["step"], e["raw"], e["centered"], aggregates[e["step"]], tasks)
+            except (ValueError, KeyError, TypeError) as error:
+                problems.append(f"{name}: invalid CORE evidence: {error}")
         if r["cohort"] == FROZEN_COHORT:
             from nexttransformer.export_frozen import check_audit
             audit_path = f"evidence/audits/{r['id']}.json"
@@ -218,9 +248,15 @@ def main(argv=None):
         ap.error("RUN_DIR, --method and --name are required to export a run")
     run, path = record(read_run(args.run_dir), args.method, args.name, args.audit, args.commit, args.cohort,
                        args.accept_baseline, args.file, args.note)
-    if path.exists() and json.loads(path.read_text())["id"] != run["id"]:
-        raise SystemExit(f"{path.relative_to(REPO)} holds another run; pass --file to publish a second {args.method} run")
-    path.write_text(json.dumps(run, indent=1, ensure_ascii=False)+"\n")
+    payload = json.dumps(run, indent=1, ensure_ascii=False, allow_nan=False)+"\n"
+    try:
+        with path.open("x") as out:
+            out.write(payload)
+    except FileExistsError:
+        if json.loads(path.read_text()) == run:
+            print(f"unchanged {path.relative_to(REPO)}")
+            return
+        raise SystemExit(f"{path.relative_to(REPO)} already exists; pass a new --file to publish another run")
     print(f"wrote {path.relative_to(REPO)}: {len(run['val'])} validations, {len(run['core'])} CORE events")
 
 
