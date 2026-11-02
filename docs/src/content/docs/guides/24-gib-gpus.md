@@ -66,6 +66,30 @@ An Nsight Systems trace of one micro-batch-1 formal update (16.07 s on the trace
 Micro-batch and evaluation batch are per-GPU layout choices of the [training protocol](../../protocol/training/);
 they change reduction order, not the update. Record them with the run.
 
+## Attention backend and acceleration packages
+
+Most methods use the SSSL window pattern: 18 of 24 layers attend to a 512-token window. Without FlashAttention-3,
+`nanochat/flash_attention.py` computes those layers with SDPA and a dense boolean mask, about 6 times slower than full
+causal attention (6.3 ms against 1.1 ms per layer, forward and backward, at 2,048 tokens). The
+`kernels-community/flash-attn3` build for sm80 runs on sm86, but the locked `kernels` 0.17.2 requires a version
+argument that `flash_attention.py` does not pass, so the trainer always falls back to SDPA. Enabling it is a
+[shared-code change](../changing-shared-code/): it changes the recorded `native_attention` and the numerics.
+
+Measured at the formal update (research mode, bounded runs):
+
+| Candidate | `configs/others/dense.json` (SSSL), micro-batch 1 | `dense_full`, micro-batch 2 | Protocol impact |
+|---|---:|---:|---|
+| SDPA (as installed) | 22.7 s | 14.5-14.7 s | Baseline |
+| FlashAttention-3 hub build | 16.2 s (-29%) | 14.5 s (no change) | Attention numerics; `native_attention: fa3`; backward not deterministic |
+| `torch.compile` of the model | | 12.8 s (-13%), 1.6 GiB less memory | Fused numerics: loss differs by 0.16 after 8 updates; trainer change |
+| NCCL 2.32.3 | | No change | Reduction order only |
+| PyTorch 2.14.1 + CUDA 13.0 | | No change | Different PyTorch build; stale cost evidence |
+| fla-core 0.6.0 | | | Fails: the linear backend imports an API that 0.6.0 removed |
+
+SSSL methods do not fit micro-batch 2 in 24 GiB with either attention backend. Liger's fused linear cross-entropy
+supports the logit softcap and matches the loss to 5e-7, but it is slower than `torch.compile` for the head and needs a
+model change. FP8 paths (Transformer Engine) need Hopper or newer.
+
 ## Method coverage on 24 GiB Ampere
 
 A full-context forward and backward (`nexttransformer.checks.validate --mode target --sequence-length 2048`) passes

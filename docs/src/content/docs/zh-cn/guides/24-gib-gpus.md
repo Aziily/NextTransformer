@@ -63,6 +63,28 @@ NVLink 两两相连（0-1、2-3、4-5、6-7），对与对之间走 PCIe，PyTor
 
 Micro-batch 和评测 batch 是[训练协议](../../protocol/training/)允许的每卡布局选择；它们改变归约顺序，不改变更新。请随运行记录。
 
+## 注意力后端与加速包
+
+大多数方法使用 SSSL 窗口模式：24 层里有 18 层只看 512 token 的窗口。没有 FlashAttention-3 时，
+`nanochat/flash_attention.py` 用 SDPA 加稠密布尔掩码计算这些层，比全因果注意力慢约 6 倍（2,048 token 时每层前向加反向 6.3 ms，
+全因果 1.1 ms）。`kernels-community/flash-attn3` 的 sm80 构建可以在 sm86 上运行，但锁定的 `kernels` 0.17.2 要求传入版本参数，
+`flash_attention.py` 没有传，所以训练器始终回退到 SDPA。启用它属于[共享代码变更](../changing-shared-code/)：会改变记录的
+`native_attention` 和数值。
+
+按正式更新形状测量（研究模式，有界运行）：
+
+| 候选 | `configs/others/dense.json`（SSSL），micro-batch 1 | `dense_full`，micro-batch 2 | 协议影响 |
+|---|---:|---:|---|
+| SDPA（当前安装） | 22.7 s | 14.5-14.7 s | 基线 |
+| FlashAttention-3 hub 构建 | 16.2 s（-29%） | 14.5 s（无变化） | 注意力数值变化；`native_attention: fa3`；反向不确定 |
+| 对模型 `torch.compile` | | 12.8 s（-13%），显存少 1.6 GiB | 融合改变数值：8 次更新后 loss 差 0.16；需改训练器 |
+| NCCL 2.32.3 | | 无变化 | 只改归约顺序 |
+| PyTorch 2.14.1 + CUDA 13.0 | | 无变化 | 不同 PyTorch 构建；成本证据过期 |
+| fla-core 0.6.0 | | | 失败：线性后端导入的 API 在 0.6.0 中已删除 |
+
+SSSL 方法无论用哪种注意力后端，micro-batch 2 都放不进 24 GiB。Liger 的 fused linear cross-entropy 支持 logit softcap，
+loss 误差 5e-7，但在输出头上比 `torch.compile` 慢，并且需要改模型。FP8 路径（Transformer Engine）需要 Hopper 或更新的 GPU。
+
 ## 24 GiB Ampere 上的方法覆盖
 
 全上下文前向和反向（`nexttransformer.checks.validate --mode target --sequence-length 2048`）对所有已注册配置通过，以下除外：
