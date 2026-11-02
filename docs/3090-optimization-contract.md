@@ -2,13 +2,13 @@
 
 ## Goal
 
-Increase steady-state throughput for the reference `dense_full` training workload on one node with eight RTX 3090 GPUs while preserving numerical behavior, the published training protocol, and bounded-run reproducibility.
+Increase steady-state throughput for the reference `dense_full` training workload on one node with eight 24 GiB Ampere (sm86) GPUs while preserving numerical behavior, the published training protocol, and bounded-run reproducibility.
 
 ## Fixed task contract
 
 - Workload: `configs/baseline/dense_full.json`
 - Data: pinned ClimbMix revision from `site.local.json`
-- Hardware: eight RTX 3090 GPUs on the same host
+- Hardware: eight 24 GiB Ampere (sm86) GPUs on the same host
 - Compute dtype: BF16
 - World size: 8
 - Micro-batch: 1 per GPU for the initial campaign
