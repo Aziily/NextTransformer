@@ -3,8 +3,8 @@ title: Training on 24 GiB GPUs
 description: What one formal run costs on eight 24 GiB Ampere GPUs, where the time goes, and which settings help.
 ---
 
-Eight 24 GiB Ampere GPUs (sm86, 71 TFLOPS dense BF16 with FP32 accumulation) can train all but two registered configurations under the unchanged
-protocol (see [method coverage](#method-coverage-on-24-gib-ampere)). These numbers come from bounded research-mode runs
+Eight 24 GiB Ampere GPUs (sm86, 71 TFLOPS dense BF16 with FP32 accumulation) run a full-context forward and backward for all but two registered
+configurations (see [method coverage](#method-coverage-on-24-gib-ampere)). These numbers come from bounded research-mode runs
 of `configs/baseline/dense_full.json` on one node with NVLink pairs (0-1, 2-3, 4-5, 6-7) and PCIe between pairs,
 PyTorch 2.9.1, CUDA 12.8 and NCCL 2.27.5. They are estimates, not a formal run.
 
@@ -76,3 +76,7 @@ for every registered configuration except:
 | kda, kda_no_ve, kda_hybrid, retnet, gdn, gdn_hybrid, gdn_hybrid_swa, deltanet_hybrid, qsa_hybrid | `No module named 'fla'` | Install `requirements/linear.txt` (fla-core 0.5.2); all nine then pass |
 | dsa, moba, moba_hybrid, nsa, qsa, seer with `--sparse-backend kernel` | FlexAttention template needs 114,688 bytes of shared memory; sm86 has 101,376 | Use the default reference backend |
 | gla, deltanet | Out of memory at micro-batch 1 | Not runnable on 24 GiB without a memory-saving kernel |
+
+The check holds no optimizer state or DDP buckets: `dense_full` peaks at 9.5 GiB there and at 17.7 GiB in training.
+Methods that peak above about 14 GiB in the check (elu_linear, elu_norm, elu_qknorm) need a bounded training smoke
+before a formal run.
