@@ -2,7 +2,6 @@
  "id": "deltanet_hybrid",
  "name": "Hybrid DeltaNet + MHA",
  "family": "hybrid",
- "status": "pending",
  "tagline": "DeltaNet everywhere except two full-attention layers.",
  "description": "The DeltaNet global-hybrid layout: full causal multi-head attention at layers 2 and 13 of 24, DeltaNet in the other 22 layers. DeltaNet reuses the linear family's projections, causal convolution, beta, q/k normalization and output normalization, trained with FLA's chunked delta rule. Native MHA, ReLU² FFN, smear, backout and residual/x0 coefficients are retained.",
  "paperTitle": "Parallelizing Linear Transformers with the Delta Rule over Sequence Length",
@@ -12,7 +11,7 @@
   "DeltaNet with chunked delta-rule training; linear state resets at packed rows",
   "FFN 6400; one joint next-token stage, no auxiliary loss"
  ],
- "limitations": "The native-MHA adaptation of the paper's global hybrid, not its separate local-MQA variant. Registered and admitted within the shared budget; no formal result is published yet. Parameters, memory and speed are outcomes, not controls.",
+ "limitations": "Single seed 42. The native-MHA adaptation of the paper's global hybrid, not its separate local-MQA variant. Trained with FLA chunked DeltaNet and deterministic SDPA without FlashAttention for MHA. Parameters, memory and speed are outcomes, not controls.",
  "diagram": "custom",
  "architecture": {
   "kind": "custom",

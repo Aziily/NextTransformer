@@ -48,12 +48,12 @@ Trained from a frozen source revision of the Others implementation, which is not
 run has a read-only cumulative audit; per-task CORE scores, centering and aggregates are reproduced, and the MLA runs
 record deterministic mode. MQA resumed at updates 5,000 and 35,000, GQA at update 5,000; the MLA runs ran in one segment each.
 
-## Hybrids (GDN + MHA, GDN + SWA, KDA + MLA-NoPE)
+## Hybrids (DeltaNet + MHA, GDN + MHA, GDN + SWA, KDA + MLA-NoPE)
 
-Trained from a frozen source revision; the GDN + SWA and [KDA + MLA-NoPE](./kda_hybrid/) runs added a launch-environment
-patch whose source diff was not archived. Read-only audits pass: cumulative **+0.672%** (GDN + MHA), **−0.542%**
-(GDN + SWA) and **+0.426%** (KDA + MLA-NoPE, 31.5418 CORE ×100 in one segment without value embeddings). KDA + MLA-NoPE
-includes eight-rank 12-update smoke and fresh-process resume acceptance; a separate 512-update pilot for these runs was
+Trained from a frozen source revision; the [DeltaNet + MHA](./deltanet_hybrid/), GDN + SWA and [KDA + MLA-NoPE](./kda_hybrid/) runs added a launch-environment
+patch whose source diff was not archived. Read-only audits pass: cumulative **+0.063%** (DeltaNet + MHA, 29.9012 CORE ×100 in one segment), **+0.672%** (GDN + MHA), **−0.542%**
+(GDN + SWA) and **+0.426%** (KDA + MLA-NoPE, 31.5418 CORE ×100 in one segment without value embeddings). DeltaNet + MHA and KDA + MLA-NoPE
+include eight-rank 12-update smoke and fresh-process resume acceptance; a separate 512-update pilot for these runs was
 not supplied, so final acceptance remains pending. At the 2,048-token context the SWA window covers every causal key, so
 GDN + SWA is a 1:1 GDN/full-attention hybrid.
 
@@ -72,4 +72,4 @@ into the strict matched comparison would require independent full-cost evidence.
 
 ## Coming soon
 
-The observatory lists three models awaiting results: DeltaNet–MHA, GDN–QSA and MoBA–MHA.
+The observatory lists two models awaiting results: GDN–QSA and MoBA–MHA.

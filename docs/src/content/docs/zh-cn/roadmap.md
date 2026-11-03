@@ -16,7 +16,7 @@ description: NextTransformer 接下来的计划。
 
 ## 即将发布的结果
 
-- **Hybrid：** DeltaNet、QSA 和 MoBA 的 hybrid。
+- **Hybrid：** QSA 和 MoBA 的 hybrid。
 - **审计：** looped 和 sparse 运行的独立运行目录审计；已发布 hybrid 的 pilot 和续训验收证据。
 
 它们的模型卡片已经在观测站中，标注为“Results coming soon”。每个结果都通过与其他贡献相同的[结果 pull request](../guides/submit-a-result/)发布。

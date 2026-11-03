@@ -35,9 +35,9 @@ sidebar:
 
 MQA、GQA、MLA-QK 和 MLA-NoPE-QK 均来自尚未移植到当前主线的冻结源码。累计审计已复算各任务 CORE、中心化及汇总值。MLA 运行还记录了确定性模式。MQA 在第 5,000 和 35,000 步续训，GQA 在第 5,000 步续训，两个 MLA 变体均在单段内完成。
 
-## 混合结构（GDN–MHA、GDN–SWA、KDA–MLA-NoPE）
+## 混合结构（DeltaNet–MHA、GDN–MHA、GDN–SWA、KDA–MLA-NoPE）
 
-三者使用冻结源码，GDN–SWA 和 [KDA–MLA-NoPE](./kda_hybrid/) 另有一项启动环境补丁未留存源码差异。只读审计通过，累计偏差分别为 **+0.672%**（GDN–MHA）、**−0.542%**（GDN–SWA）和 **+0.426%**（KDA–MLA-NoPE，单段去除值嵌入训练，最终 CORE ×100 为 31.5418）。KDA–MLA-NoPE 提供了 8 个 rank 下 12 步新进程续训一致性验收记录；因缺少独立的 512 步 pilot 记录，最终验收仍待完成。在本基准的 2,048-token 上下文中，SWA 窗口覆盖所有因果位置，所以 GDN–SWA 在这里实际是 1:1 的 GDN 与完整注意力混合。
+四者使用冻结源码，[DeltaNet–MHA](./deltanet_hybrid/)、GDN–SWA 和 [KDA–MLA-NoPE](./kda_hybrid/) 另有一项启动环境补丁未留存源码差异。只读审计通过，累计偏差分别为 **+0.063%**（DeltaNet–MHA，单段完成，最终 CORE ×100 为 29.9012）、**+0.672%**（GDN–MHA）、**−0.542%**（GDN–SWA）和 **+0.426%**（KDA–MLA-NoPE，单段去除值嵌入训练，最终 CORE ×100 为 31.5418）。DeltaNet–MHA 与 KDA–MLA-NoPE 提供了 8 个 rank 下 12 步新进程续训一致性验收记录；因缺少独立的 512 步 pilot 记录，最终验收仍待完成。在本基准的 2,048-token 上下文中，SWA 窗口覆盖所有因果位置，所以 GDN–SWA 在这里实际是 1:1 的 GDN 与完整注意力混合。
 
 ## 循环与稀疏结构
 
@@ -49,4 +49,4 @@ SSSL、MoR、LoopFormer 和 Circle Loop 是项目首批运行，采用当时的�
 
 ## 待发布的方法
 
-观测站中待发布结果的模型为 DeltaNet–MHA、GDN–QSA 和 MoBA–MHA。
+观测站中待发布结果的模型为 GDN–QSA 和 MoBA–MHA。
