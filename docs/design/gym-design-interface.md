@@ -9,7 +9,8 @@ policies are not adopted upstream by the existence of this document.
 
 Build an offline research environment in which an RSI system designs language-model
 architectures, learns from controlled experiments, and submits **one final architecture**.
-The gym automatically executes and scores that architecture. Final presentation uses
+The gym verifies and freezes that architecture. A separately dispatched platform
+pipeline automatically trains and scores it. Final presentation uses
 the existing leaderboard's BPB, CORE, compute and provenance fields.
 
 The participant receives a **Gym API/SDK**, a versioned architecture component
@@ -46,7 +47,7 @@ API exposes experimental decisions, not arbitrary access to the machine.
 | Candidate lineage and selection | Immutable candidate identity and provenance |
 | Experiment length, continuation and early stopping | Fixed profile semantics, training and data order |
 | Allocation across concurrent experiments | Atomic reservations and resource scheduling |
-| One final architecture choice | Fresh final training, evaluation, audit and result export |
+| One final architecture choice | Submission verification, then separately dispatched final training/evaluation |
 
 ### 2.2 Expose a capability, not a repository
 
@@ -133,7 +134,8 @@ capability this document claims already exists.
 | Unaccountable computation | Rejected before real dispatch; not run for free as a diagnostic |
 | Resume | Same immutable architecture/configuration and compatible complete checkpoint only |
 | Research feedback | Training loss and dev BPB plus cost, diagnostics and resource observations |
-| Final scoring | One frozen candidate, from scratch, common separate final allocation |
+| Submission verification | Harbor verifier checks valid submission/evidence only; acceptance is not a performance score |
+| Final scoring | Separately started platform pipeline, one frozen candidate, from scratch, common separate allocation |
 | Display | Official leaderboard-style result; no required new composite or research-efficiency score |
 | Failure accounting | Executed work remains charged, including failed and cancelled attempts |
 
@@ -184,7 +186,9 @@ flowchart TB
     T[Platform training coordinator]
     E[Trusted scoring service]
     D[Controlled data delivery]
-    F[Final audit and result export]
+    V[Submission verifier]
+    P[Authorized final-run dispatcher]
+    F[Final training, audit and result export]
     R -->|resource IDs| K
     R -->|typed requests and candidate bytes| A
     A --> S
@@ -197,7 +201,9 @@ flowchart TB
     D -->|evaluation labels| E
     T -->|trusted progress| S
     E -->|trusted metrics| S
-    S -->|frozen final run| F
+    S -->|immutable submission and evidence| V
+    V -->|verified submission| P
+    P -->|separate launch and allocation| F
 ```
 
 - **Research workspace:** contains drafts and client tools, not a runtime checkout.
@@ -221,6 +227,52 @@ Container/VM choice, device isolation and the supported execution subset require
 validation. The architecture describes required boundaries, not a promise that a
 particular container configuration is sufficient.
 
+### 5.1 Organize heavy assets separately from the control service
+
+The API server owns metadata and policy, not a copy of all datasets and checkpoints
+in its process or per-session directory. Start with a modular control service, a
+transactional database, an artifact store and an isolated worker pool. Logical
+separation is required; a fleet of independently deployed microservices is not.
+
+| Asset class | Organization | Sharing and access | Lifecycle |
+| --- | --- | --- | --- |
+| Runtime images, component packages | Immutable digest-addressed versions | Worker image/layer caches; participant sees approved SDK/reference only | Publish new version; never mutate a pinned version |
+| Data, tokenizer, evaluation bundles | Manifested datasets with split/view IDs and checksums | Shared physical storage; read-only operation-specific delivery, never the whole dataset root to a candidate | Retain pinned versions required for reproducibility |
+| Architecture references and baseline metadata | Versioned public catalog | Same approved catalog for the cohort | Update only with a new catalog/cohort version |
+| Candidate source and reports | Immutable artifacts indexed by session/candidate | Session-authorized reads; no cross-session browsing | Retain final packages and provenance; expire drafts by policy |
+| Checkpoints and training logs | Experiment-scoped artifacts, separate from database rows | Platform restore only; research/final namespaces remain distinct | Explicit quota/retention; pin resumable and final artifacts |
+| Database and event/charge journal | Sessions, jobs, ownership, hashes, state and accounting | Control plane writes; separate backup/restore plan | Durable; never garbage-collect unresolved accounting |
+| Worker scratch and staging | Private temporary volume per job | No shared writable working directory | Remove after upload, reconciliation and lease release |
+
+Use shared storage or read-only caches for large assets, rather than copying a data
+collection or runtime into each Harbor trial. Physical deduplication must not expose
+another session's artifact existence or bypass authorization. Workers must not receive
+a broad mount containing formal evaluation data when running research.
+
+A resource manager resolves manifest IDs to internal storage locations, checks asset
+readiness, allocates execution slots and fences stale worker leases. The scheduler
+only starts jobs whose pinned images/data and requested layout are ready. Asset
+staging errors are infrastructure outcomes, not bad architecture scores.
+
+Separate compute reservations from storage quotas and GPU-slot leases. Available
+FLOPs do not imply free GPUs or unlimited checkpoint storage. Announce storage limits
+and TTLs; do not evict a checkpoint used by a live continuation or a frozen final
+artifact. Mark artifacts ready only after an atomic upload/manifest commit. Garbage
+collection must respect live references, jobs and unsettled reservations.
+
+### 5.2 Agent workspace and server storage do not overlap
+
+A Harbor agent image contains the client, approved reference material and editing
+tools. Writable candidate drafts/notes and a final receipt live in the agent workspace.
+There is no shared writable mount into the platform checkout, artifact root, database,
+worker scratch or checkpoint directories. Uploads carry bytes; downloads resolve
+session-authorized object IDs through the service.
+
+Only a trusted trial controller can allocate a session and bind its resource/budget
+policy. The agent receives session-scoped research credentials. The separate verifier
+receives a submission-inspection identity, not the agent credential or training-control
+credential. Administrative final-run launch credentials never enter either container.
+
 ## 6. Participant-facing resources and candidate package
 
 ### 6.1 Read-only catalog
@@ -237,7 +289,57 @@ Expose versioned resource IDs for:
 bounded and identical for participants in the same cohort. Copying reference code
 into a candidate changes only that candidate, never the platform original.
 
-### 6.2 Submission format
+### 6.2 Resource information is part of the public contract
+
+A researcher needs enough information to design feasible experiments, not internal
+machine inventory. Expose both a versioned capability descriptor and a timestamped,
+short-lived availability view, filtered to the caller's allowed resource profiles.
+
+| Information | Examples | Meaning |
+| --- | --- | --- |
+| Stable hardware/layout capabilities | Accelerator class, usable memory per device, supported GPU counts/distributed layouts, supported precisions | What this resource profile can run; not a promise that it is idle |
+| Runtime capabilities | Image digest, dependency/component versions, supported operators/kernels | What source can execute and what requires a new platform version |
+| Session limits | Concurrent jobs, worker memory/time bounds, artifact/checkpoint quotas | What this researcher may request |
+| Allowed execution profiles | Context, shapes, batch rules and research/final compatibility | What constitutes a valid experiment on this pool |
+| Current availability | Allocatable slots, own queued/running jobs, capacity state, snapshot time | Planning information; rechecked at dispatch |
+| Candidate fit | Estimated peak memory, compatible profile IDs, measured or estimated throughput and provenance | Advisory until supported preflight has passed |
+
+Do not reveal hostnames, IP addresses, storage paths, other users' jobs, cloud keys or
+raw device-management endpoints. Report missing memory/throughput/queue estimates as
+null, with reasons; theoretical FLOPs do not determine wall-clock runtime. Distinguish
+measured, estimated and unavailable values.
+
+Proposed `get_resources` response shape; quantities are illustrative, not provisioned
+hardware or chosen quotas:
+
+```json
+{
+  "schema_version": "gym.resources.v1",
+  "capability_revision": "resources-example-1",
+  "observed_at": "2026-11-03T00:00:00Z",
+  "profiles": [{
+    "resource_profile_id": "research-example",
+    "accelerator_class": "example-gpu",
+    "usable_memory_bytes_per_device": null,
+    "supported_device_counts": [1],
+    "supported_precisions": ["float32"],
+    "runtime_manifest_id": "runtime-example-1",
+    "availability": "unknown",
+    "allocatable_slots": null
+  }],
+  "session_limits": {"max_concurrent_experiments": 2}
+}
+```
+
+Profiles must be fully configured before dispatch; unknown required capabilities in
+an informational response never mean an execution check may be skipped. Add optional
+`resource_profile_id` to quotations. The server chooses the actual worker. Bind the
+selected capability/runtime revision to the quote; compatible placement may vary,
+but silently changing hardware class, numerical path or distributed layout is not
+allowed. A capacity query or queue-time estimate does not reserve a GPU. GPU-slot
+leases and FLOPs reservations are separate transactional scheduling concerns.
+
+### 6.3 Submission format
 
 Proposed package:
 
@@ -290,22 +392,22 @@ edit. The platform selects the pinned execution environment, not the participant
 | Candidate | Immutable architecture package, configuration hash, parents and contract version |
 | Validation report | Candidate, environment and verifier identities; checks, coverage and findings |
 | Cost report | Candidate/profile/accounting identities; components, stages and admissibility |
-| Quote | Immutable request specification, bound on cost, expiry; not yet a reservation |
+| Resource profile | Pinned runtime/hardware/layout capabilities and session-visible limits |
+| Quote | Immutable request and resource specification, bound on cost, expiry; not yet a reservation |
 | Experiment | Candidate, profile, start checkpoint, target update and job state |
 | Checkpoint | Owner experiment, compatibility hashes, progress and complete training state |
 | Reservation | Account, operation, maximum charge, committed charges and unsettled balance |
-| Final submission | One frozen candidate, final profile, scoring attempts and terminal result |
+| Final submission | One frozen candidate, intended final profile, evidence manifest and verification receipt |
+| Final run | Separately authorized allocation, pinned submission, attempts and eventual scored result |
 
 All reads and mutations check session ownership. Guessing an ID or knowing an artifact
 hash does not grant access. Version hashes invalidate stale reports and quotes.
 
-Session lifecycle:
+Research session lifecycle:
 
 ```text
-created -> researching -> finalizing -> scoring -> completed
-                 |              |          |
-                 |              |          +-> failed
-                 |              +-> failed
+created -> researching -> finalizing -> submitted
+                 |
                  +-> budget_exhausted -> finalizing
                  +-> closed_without_submission
 ```
@@ -313,8 +415,21 @@ created -> researching -> finalizing -> scoring -> completed
 Exhaustion blocks additional spending but permits selecting an already eligible final
 candidate. Finalization checks eligibility before atomically locking the final choice,
 rejects new research jobs, and cancels/drains and reconciles outstanding research work.
-It then dispatches scoring when the separate allocation and resources are ready.
-There is no transition back to researching after a final choice is accepted.
+It produces a frozen submission and evidence manifest; it does **not** launch formal
+training. A session cannot return to research after its final choice is accepted.
+
+Submission verification and final scoring have independent lifecycles:
+
+```text
+submission: pending_verification -> verified | rejected
+final run:  not_scheduled -> queued -> running -> completed | failed | cancelled
+```
+
+A verified submission is a valid architecture deliverable, not a measured result.
+The final-run transition out of `not_scheduled` requires a separate authorized launch,
+allocation and resource profile. Harbor can finish its research trial without waiting
+for the final run, which may be scheduled much later. Neither session cleanup nor
+Harbor verifier retries should launch, duplicate or destroy final runs.
 
 Job lifecycle:
 
@@ -349,6 +464,7 @@ specifications. Public transports must all enforce the same service policy.
 | Operation | Key inputs | Output / behavior |
 | --- | --- | --- |
 | `describe_space` | Contract/profile filters | Controls, constraints, profiles, schema versions and final requirements |
+| `get_resources` | Optional allowed profile filter | Versioned capabilities/limits and timestamped availability; no capacity guarantee |
 | `list_components` | Filters, page cursor | Supported components, signatures and resource IDs |
 | `read_reference` | Approved resource ID | Bounded source/documentation/template content |
 | `submit_candidate` | Package bytes, idempotency key | Candidate ID, server hash, static metadata findings |
@@ -357,18 +473,26 @@ specifications. Public transports must all enforce the same service policy.
 | `validate_candidate` | Candidate ID, profile ID, idempotency key | Static report and, only when covered/reserved, dynamic validation job |
 | `calibrate_candidate` | Candidate ID, allowed grid, idempotency key | Analysis job and derived candidate IDs with cost reports |
 | `debug_candidate` | Candidate ID, named check, bounded shape, idempotency key | Covered, reserved diagnostic job; not arbitrary user code execution |
-| `quote_experiment` | Candidate ID, profile ID, target update, optional checkpoint ID | Bound request, cost breakdown, expiry and affordability snapshot |
+| `quote_experiment` | Candidate ID, profile ID, target update, optional checkpoint/resource profile IDs | Bound execution/resource request, cost breakdown, fit findings, expiry and affordability snapshot |
 | `run_experiment` | Quote ID, idempotency key | Atomic reservation and experiment/job IDs |
 | `get_job` | Job ID | Durable status, progress, result/artifact references |
 | `read_events` | Cursor, filters, limit | Ordered events and next cursor; clients deduplicate by event ID |
 | `cancel_job` | Job ID, idempotency key | Cancellation requested/current terminal status |
 | `get_result` | Job ID | Trusted metrics, curves, costs, diagnostics and checkpoint reference |
 | `get_budget` | Authenticated session | Limit, spent, reserved, available and accounting version |
-| `finalize` | Candidate ID, final profile ID, idempotency key | Frozen submission ID and scoring status |
-| `get_submission` | Submission ID | Final state and terminal official-style result when available |
+| `finalize` | Candidate ID, intended final profile ID, idempotency key | Frozen submission ID and evidence manifest; no formal training launch |
+| `get_submission` | Submission ID | Verification state/receipt and separately linked final-run status, if scheduled |
+
+Administrative/verifier operations are separate from the agent API:
+
+| Operation | Caller | Behavior |
+| --- | --- | --- |
+| `verify_submission` | Trusted separate verifier | Read frozen server evidence; emit idempotent valid/rejected receipt, never launch training |
+| `launch_final_run` | Authorized platform scheduler/operator | Bind verified submission, pinned runtime/resources and separate allocation; queue fresh training |
+| `get_final_run` | Authorized read-only client | Read scheduling/evaluation status and eventual official-style result |
 
 The target update is absolute, not an ambiguous number of additional steps. A quote
-binds candidate, profile, checkpoint and target update; `run_experiment` cannot change
+binds candidate, profile, resource capability revision, checkpoint and target update; `run_experiment` cannot change
 those values. Quotation alone does not reserve funds, so dispatch rechecks available
 budget and quote validity atomically. Dynamic validation/debug operations use the same
 internal quotation/reservation machinery even when exposed as convenience calls.
@@ -384,6 +508,7 @@ Illustrative API usage only:
 
 ```python
 space = gym.describe_space()
+resources = gym.get_resources()
 components = gym.list_components()
 reference = gym.read_reference(resource_id=components.items[0].reference_id)
 
@@ -409,6 +534,7 @@ submission = gym.finalize(
     candidate_id=selected_candidate_id, profile_id=final_profile,
     idempotency_key="final-choice"
 )
+# This freezes a submission only; a privileged platform workflow launches final training.
 ```
 
 ### 8.4 Structured errors
@@ -545,18 +671,59 @@ work is charged. Differentiate `budget_stopped`, cancellation, numerical failure
 infrastructure failure. A session cannot acquire a fresh budget by creating another
 job, candidate or checkpoint. Session allocation itself is an administrator operation.
 
-## 11. Final submission and official-style publication
+## 11. Submission verification, separate final training and publication
 
-The final deliverable is one architecture/configuration selected from the session's
-immutable candidates. Automatic evaluation means no participant-written launcher,
-manual weight transfer or self-reported metric is required.
+### 11.1 Harbor verifier accepts a deliverable, not a performance score
 
-Before locking the choice, validate final-profile eligibility and evidence freshness.
-Once accepted, no further candidate selection is permitted. Provision the platform
-runtime, initialize from scratch and run the selected final protocol. Operational
-retries retain exactly that artifact and are recorded under a finite retry/allocation
-policy. Failure never silently selects a different candidate or becomes unlimited
-free research.
+One Harbor trial corresponds to a research session. The task's agent environment
+contains only client/reference/workspace assets; a separate verifier receives an
+explicit final receipt artifact and a trusted trial-to-session binding. The receipt
+contains IDs, not authoritative scores. It is untrusted input until checked against
+the server. Pin and test the Harbor task schema/runtime version used by the adapter.
+
+The verifier checks:
+
+- a single final choice exists for this trial's session and the caller owns it;
+- candidate/configuration hashes and the declared contract match the frozen package;
+- packaging, supported hooks and cost coverage are valid;
+- required bounded construction, numerical, causal and checkpoint checks have valid
+  server-issued reports for these exact candidate/runtime versions;
+- intended final-profile admission evidence is present, not a claimed candidate cost;
+- research jobs/charges are reconciled and no budget or integrity violation is recorded.
+
+This is more than a syntax check, but it is not full training or validation/CORE
+scoring. Required dynamic checks should have been performed through the research gym
+and charged before freezing. The verifier reuses the immutable evidence rather than
+importing untrusted Python or launching unaccounted checks. Missing evidence makes
+verification fail with an actionable reason; there is no free post-budget validation
+loop. Infrastructure failures are distinguished from an invalid artifact.
+
+The verifier writes a submission-validity result and report. A numeric Harbor reward,
+if required by the task adapter, means validity only, not architecture performance.
+No placeholder BPB/CORE or successful leaderboard rank is generated. A verified
+architecture may later train poorly; that does not retroactively make its package
+invalid. Verifier retries are idempotent and cannot start expensive final training.
+
+### 11.2 Final training is explicitly and separately dispatched
+
+After verification, the submission waits in `not_scheduled`. An authorized operator
+or platform scheduling policy invokes `launch_final_run` with the submission ID,
+final profile, runtime/resource profile and separate finite allocation. The researcher
+and Harbor verifier have no permission to call this mutation. Submission acceptance,
+resource availability and a valid quote are not implicit launch authorization.
+
+Once launched, the platform automatically provisions the runtime, initializes from
+scratch, trains, evaluates, audits and exports. No participant-written launcher,
+research checkpoint, manual weight transfer or self-reported metric is used. Recheck
+that the approved environment and admission evidence remain compatible; if not,
+report the problem rather than silently changing the architecture or scientific profile.
+
+Operational retries retain exactly the frozen artifact and are recorded under a
+finite retry/allocation policy. Failure never silently selects a different candidate
+or becomes unlimited free research. Harbor/agent cleanup cannot delete the pinned
+submission or cancel a separately authorized final run.
+
+### 11.3 Publish measured results only
 
 For official-compatible scoring, preserve:
 
@@ -592,6 +759,8 @@ These are required validations, not completed security claims:
 | Budget concurrency | Simultaneous launches cannot overspend; duplicate requests/events do not duplicate launches or charges |
 | Failure recovery | Crash/cancel/restart leaves no free computation, premature refund or lost running worker |
 | Final selection | One frozen choice, fresh initialization, no research checkpoint reuse, no post-score reopening |
+| Submission/final-run separation | Verifier can accept/reject a deliverable but cannot launch training; acceptance creates no performance score |
+| Resource/asset handling | Read-only shared assets, session-scoped artifacts, fenced worker leases and no premature checkpoint eviction |
 
 Correctness checks include finite outputs/gradients, parameter coverage, stage
 boundaries and checkpoint round trips. Source-aware cost re-audits are required when
@@ -612,12 +781,14 @@ both pass; success at one does not imply the other.
 4. **Dev-only research runner.** Implement explicit dev data selection, trusted scoring,
    bounded training and complete resume. Verify reference parity without altering
    historical proofs or silently using formal validation for selection.
-5. **Persistent research service.** Integrate quotes, reservations, concurrency, events,
-   cancellation, reconciliation and finalization. Demonstrate a two-candidate research
-   loop through the client interface, including continuation and a failed attempt.
-6. **Final runner and publication.** Automate fresh final scoring, audit and compatible
-   export. Keep upstream acceptance separate. Exercise the pipeline with bounded fixtures
-   before any independently authorized full run.
+5. **Persistent research service and task adapter.** Integrate resource descriptors,
+   shared-asset manifests, quotes, reservations, leases, concurrency, events, cancellation,
+   reconciliation and finalization. Demonstrate a two-candidate research loop and a
+   separate Harbor verifier accepting its frozen submission without launching training.
+6. **Separately dispatched final runner and publication.** Implement privileged final-run
+   launch and automatic fresh scoring, audit and compatible export. Keep upstream
+   acceptance separate. Exercise the pipeline with bounded fixtures before any
+   independently authorized full run.
 7. **Framework adapters.** Add CLI/MCP or framework-specific convenience adapters over
    the same application service. No transport-specific budgeting or scoring policy.
 
@@ -634,7 +805,10 @@ Required before numerical execution:
 - hardware allocation, concurrency, worker memory/time limits and supported dependencies;
 - research profiles, evaluation cadence/token budgets and fixed schedule semantics;
 - validated sandbox, workspace tool policy and supported executable/operation subset;
-- artifact size limits, retention rules and versioned comparison-cohort identity.
+- artifact size limits, shared-asset manifests, cache/checkpoint retention rules and
+  versioned comparison-cohort identity;
+- pinned Harbor adapter/task schema, submission-validity reporting and separately
+  authorized final-run scheduling policy.
 
 These are implementation/configuration decisions, not reasons to obscure the proposed
 product boundaries. No machine access or full training launch is authorized merely
