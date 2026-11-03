@@ -1,0 +1,11 @@
+{
+ "name": "cla",
+ "family": "others",
+ "title": "Cross-Layer Attention · CLA",
+ "paper": {"title": "Reducing Transformer Key-Value Cache Size with Cross-Layer Attention",
+           "url": "https://arxiv.org/abs/2405.12981"},
+ "options": {"share_kv": true},
+ "debug_options": {},
+ "shell": {"layers": 24, "mlp_width": 6144, "window_pattern": "L"},
+ "layer_multiple": 1
+}
