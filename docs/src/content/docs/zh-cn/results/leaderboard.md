@@ -33,6 +33,7 @@ description: 同一参考协议下完成的正式训练，以及各方法与 Den
 | [Gated DeltaNet · GDN](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/gdn.json) | 线性 | 0.6700 | +0.0028 | 30.55 | -2.55 | 4.687 |
 | [Mixture-of-Recursions · MoR](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/mor.json) | 循环 | 0.6838 | +0.0166 | 30.37 | -2.73 | 4.958¹ |
 | [Universal Transformer · ACT](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/ut_act.json) | 循环 | 0.6894 | +0.0222 | 30.07 | -3.03 | 4.660 |
+| [Hybrid DeltaNet + MHA](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/deltanet_hybrid.json) | 混合 | 0.6731 | +0.0059 | 29.90 | -3.19 | 4.675 |
 | [Qwen Sparse Attention · QSA](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/qsa.json) | 稀疏 | 0.6708 | +0.0036 | 29.82 | -3.27 | 4.628 |
 | [RetNet · Retention](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/retnet.json) | 线性 | 0.6825 | +0.0153 | 29.36 | -3.73 | 4.630 |
 | [Circle Loop](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/circle.json) | 循环 | 0.6912 | +0.0240 | 28.97 | -4.12 | 4.977¹ |

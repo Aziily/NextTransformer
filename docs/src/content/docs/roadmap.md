@@ -18,7 +18,7 @@ description: What is coming next to NextTransformer.
 
 ## Upcoming results
 
-- **Hybrids:** DeltaNet, QSA and MoBA hybrids.
+- **Hybrids:** QSA and MoBA hybrids.
 - **Audits:** independent run-directory audits for the looped and sparse runs; pilot and resume acceptance evidence for
   the published hybrids.
 
