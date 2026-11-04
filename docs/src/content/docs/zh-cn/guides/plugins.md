@@ -4,7 +4,7 @@ description: 以插件的形式添加新架构，无需修改共享文件。
 ---
 
 新方法就是一个插件：`nexttransformer/methods/` 下的一个目录，由注册表自动发现。它不需要修改任何共享文件，因此不会改变其他方法。
-它的成本证明只对自己的包和共享核心取指纹，所以添加它永远不会让其他证明失效；只添加插件自身文件的 pull request 会被 CI 接受。
+成本证明记录插件自身和共享核心的源码指纹。
 开始之前，请先[提交一个提案 issue](https://github.com/Interactive-Active-AI/NextTransformer/issues/new/choose)。
 
 ## 目录结构
@@ -127,7 +127,8 @@ launch/train.sh --config configs/<family>/<name>.json --site-config site.local.j
     --output runs/<name>-smoke --micro-batch 8 --smoke-steps 2
 ```
 
-在 CI 中，插件自己的测试、共享的逐方法测试（前向和反向、因果性、梯度、检查点往返）以及范围检查会自动运行。合并之前，维护者会在审计环境中重新审计该方法。
-合并之后，正式运行使用 `--formal`，其结果通过另一个 pull request 提交。
+完成上述检查后，在你的 fork 上用已校准的配置和 `--formal` 完成正式训练，按[结果提交指南](../submit-a-result/)审计并导出结果。
+然后向上游提交一个 PR，关联提案 issue，并附上插件、校准配置、算力证明、测试、模型卡、来源说明及正式结果。维护者会在合并前复核算力证明。
+竞技场参赛项目请遵循[竞技场规则](../../arena/rules/)。
 
 如果要试用放在仓库之外的插件，把它们的根目录列在 `NEXTTRANSFORMER_METHOD_PATHS` 中。指纹只覆盖仓库内的插件根目录，因此这类方法只能用于研究。

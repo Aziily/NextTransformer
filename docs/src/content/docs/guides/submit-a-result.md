@@ -4,7 +4,7 @@ description: Audit a finished formal run, export it, and open a pull request.
 ---
 
 A result is a finished **formal** run of an admitted configuration: 46,875 updates, all 189 validation events, all six
-CORE-22 events, every segment trained with `--formal`. Submitting it takes three files and one pull request.
+CORE-22 events, every segment trained with `--formal`. For a new method, submit these artifacts in the same pull request as the implementation.
 
 ## 1. Audit the run directory
 

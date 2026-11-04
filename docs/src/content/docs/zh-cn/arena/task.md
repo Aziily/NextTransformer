@@ -55,10 +55,9 @@ python -m pytest tests/test_models_api.py -q                     # 构建并重�
 
 ## 如何提交
 
-1. **准入 pull request：** 你的插件、已准入的配置、证明集、测试、模型卡片，以及 `"status": "admitted"` 的披露卡片 `results/arena/<entry>.json`。从
-   [卡片模板](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/docs/public/arena/card.template.json)开始；各字段在[披露页面](../disclosure/)中说明。
-2. **正式运行：** 用 `--formal`（8、16 或 32 张 GPU）训练已准入的配置，用 `python -m nexttransformer.audit_run` 审计，并用 `python -m nexttransformer.export_run` 导出。
-3. **结果 pull request：** 运行记录、其审计、运行说明页，以及更新为 `"status": "complete"` 并附最终检查点和训练日志链接的卡片。
+1. 先开提案 issue。正式训练前，在该 issue 中登记 fork 的提交 SHA、已校准配置和算力证明。
+2. 在 fork 上用 `--formal`（8、16 或 32 张 GPU）训练该配置，用 `python -m nexttransformer.audit_run` 审计已完成的运行，再用 `python -m nexttransformer.export_run` 导出结果。
+3. 审计匹配后，将实现和正式结果放在同一个 PR 中提交。附上[参赛规则](../rules/)列出的文件和 `status: complete` 的[披露卡](../disclosure/)，给出检查点和训练日志链接，并关联预注册 issue。
 
-每次提交 pull request 之前，运行 `python -m nexttransformer.arena --check` 和 `python -m nexttransformer.export_run --check`。如实报告：失败的启动、训练过的每个候选，以及人提供了多少帮助。
+提交 PR 之前，运行 `python -m nexttransformer.arena --check` 和 `python -m nexttransformer.export_run --check`。如实报告：失败的启动、训练过的每个候选，以及人提供了多少帮助。
 一个输给基线但完整披露的参赛作品，也是有价值的结果。

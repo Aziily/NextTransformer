@@ -139,6 +139,11 @@ def check(root=RESULTS):
     return problems
 
 
+def is_disclosure_card(path):
+    """Match the same results/arena/*.json files that check() validates."""
+    return re.fullmatch(r"results/arena/[^/]+\.json", path) is not None
+
+
 def classify(changes, base_text=lambda path: None):
     """Verdicts for `git diff --name-status` rows: ok, review, or blocked, each with a reason.
 
@@ -149,7 +154,7 @@ def classify(changes, base_text=lambda path: None):
     for status, path in changes:
         kind = status[0]
         if path.startswith(BLOCKED): verdict, reason = "blocked", "fixed by the training contract or the arena"
-        elif path.startswith("results/arena/"):
+        elif is_disclosure_card(path):
             verdict, reason = ("blocked", "cards are never deleted") if kind == "D" else ("ok", "disclosure card")
         elif path.startswith(FROZEN):
             verdict, reason = ("ok", "new record or evidence") if kind == "A" else ("blocked", "published records and evidence are frozen")
@@ -185,7 +190,7 @@ def scope(base):
     git = lambda *args: subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, check=True).stdout
     merge_base = git("merge-base", base, "HEAD").strip()
     changes = [tuple(line.split("\t", 1)) for line in git("diff", "--name-status", "--no-renames", merge_base, "HEAD").splitlines()]
-    if not any(path.startswith("results/arena/") for _, path in changes) and not method_pull_request(changes): return None
+    if not any(is_disclosure_card(path) for _, path in changes) and not method_pull_request(changes): return None
     return classify(changes, lambda path: git("show", f"{merge_base}:{path}"))
 
 

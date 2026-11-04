@@ -5,8 +5,7 @@ description: Add a new architecture as a plugin, without editing shared files.
 
 A new method is a plugin: one directory under `nexttransformer/methods/` that the registry discovers. It needs no
 change to shared files, so it cannot change another method. Its cost proof fingerprints only its own package and the
-shared core, so adding it never invalidates another proof, and CI accepts the pull request when it adds only the
-plugin's own files. Please [open a proposal issue](https://github.com/Interactive-Active-AI/NextTransformer/issues/new/choose)
+shared core. Please [open a proposal issue](https://github.com/Interactive-Active-AI/NextTransformer/issues/new/choose)
 before you start.
 
 ## Layout
@@ -134,9 +133,10 @@ launch/train.sh --config configs/<family>/<name>.json --site-config site.local.j
     --output runs/<name>-smoke --micro-batch 8 --smoke-steps 2
 ```
 
-In CI, the plugin's tests, the shared per-method tests (forward and backward, causality, gradients, checkpoint round
-trip) and the scope check run automatically. A maintainer re-audits the method in the audited environment before
-merging. After the merge, the formal run uses `--formal`, and its result arrives in a separate pull request.
+After these checks, train the calibrated configuration on your fork with `--formal`. Follow the
+[result guide](../submit-a-result/) to audit and export the completed run. Then open one pull request with the
+plugin, calibrated configuration, cost proof, tests, model card, source notes and formal result. Link the proposal
+issue. A maintainer re-audits the method before merging. For an Arena entry, follow the [Arena rules](../../arena/rules/).
 
 To try plugins kept outside the repository, list their roots in `NEXTTRANSFORMER_METHOD_PATHS`. Fingerprints cover
 only plugin roots inside the repository, so such methods are for research.

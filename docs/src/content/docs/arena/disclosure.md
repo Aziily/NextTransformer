@@ -13,7 +13,7 @@ and CI runs it. Start from the [template](https://github.com/Interactive-Active-
 | `runIds` | Run records in `results/runs/` for this method; required once `status` is `complete` |
 | `arenaProtocol` | `arena-v1` |
 | `status`, `statusNote` | `admitted`, `complete`, `legacy` or `retracted`; `legacy` and `retracted` need a note |
-| `submitted` | Date of the admission pull request, `YYYY-MM-DD` |
+| `submitted` | Date the fork commit and configuration were preregistered in the proposal issue, `YYYY-MM-DD` |
 | `verification` | `self-reported`, `reproduced` or `maintainer` |
 | `researcher.people` | People involved: `name`, optional `handle`, and `role` |
 | `researcher.llms` | Each LLM: `name`, `version` (`null` if unknown) and `role` |

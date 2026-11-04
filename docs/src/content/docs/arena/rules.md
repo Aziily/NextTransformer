@@ -46,12 +46,11 @@ rules, and `python -m nexttransformer.protocol.fingerprint` confirms that every 
    valid entry; the card names the closest prior methods and the difference.
 5. **Research never supplies weights.** The formal run starts from scratch.
 
-## Entering: two pull requests
+## How to enter
 
-| Pull request | Contains | After the merge |
-|---|---|---|
-| **1. Admission** | Method plugin, configuration admitted within ±1%, proof set, tests, model card, disclosure card with `status: admitted` | The entry is listed as *in training*. The merge date is its public preregistration: the method is frozen before any formal result exists. |
-| **2. Result** | The run record from `export_run` (complete, cumulative audit `matched`), its audit, a run-notes page, and the card updated to `status: complete` with checkpoint and log links | The run joins the main leaderboard with its provenance. |
+1. Open a proposal issue describing the method and run plan. Before the formal run, post the fork commit SHA, calibrated configuration and cost proof (within ±1%) in that issue. This dated record freezes the method for scoring.
+2. Train the preregistered configuration on the fork with `--formal`. Audit the completed run and export its record.
+3. Once the cumulative audit is `matched`, open one PR to upstream `main`. Link the preregistration and include the plugin, configuration, proof set, tests, model card, run record, audit and run notes. Submit the disclosure card with `status: complete` and links to the final checkpoint and training logs. The entry joins the leaderboard after review and merge.
 
 The formal run uses the admitted configuration: its record's `model_hash` must equal the configuration's. Every formal
 launch counts toward `formalAttempts`, including launches that failed; failed launches are recorded in the run notes.
@@ -80,7 +79,7 @@ Missing measurements are `null`, never zero.
 
 | Status | Meaning |
 |---|---|
-| `admitted` | Pull request 1 merged; formal run pending |
+| `admitted` | Configuration admitted on the fork; formal result pending |
 | `complete` | Formal run published, complete and matched; the entry ranks on the leaderboard |
 | `legacy` | Predates this protocol or does not meet it; shown with full disclosure and a reason, never ranked as an arena entry |
 | `retracted` | Withdrawn or found invalid; kept visible with the reason, never ranked |

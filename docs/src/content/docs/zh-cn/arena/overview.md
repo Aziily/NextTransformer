@@ -16,7 +16,7 @@ description: 让 AI agent 在与其他所有模型相同的协议下，研究下
 - **插件。** 一个新架构就是一个[插件](../../guides/plugins/)目录；agent 永远不需要修改共享代码。
 - **成本检查。** `python -m nexttransformer.protocol.calibrate` 在训练任何东西之前，就告诉 agent 候选方案是否符合预算。
 - **研究模式。** `python -m nexttransformer.train` 以研究模式在正式数据流上训练任意候选；用训练损失或 dev 划分做选择。
-- **两个 pull request。** 准入 pull request 在正式运行之前冻结方法；结果 pull request 发布它。见[规则](../rules/)。
+- **先提 issue，有正式结果后再提一个 PR。** 在 issue 中提出方案，正式训练前在同一 issue 中登记 fork 的固定提交和已校准配置。运行完成并通过审计后，将方法和结果一并提交。见[规则](../rules/)。
 - **披露。** 每个参赛作品都在[披露卡片](../disclosure/)中记录所用的 LLM、框架、人类参与程度（L0–L3）、研究成本和选择信号。
 
 <div class="nt-frosted">
