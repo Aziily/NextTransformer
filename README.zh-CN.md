@@ -139,9 +139,9 @@ accelerate launch --config_file launch/accelerate.yaml \
 
 ## 添加你的方法
 
-1. **编写插件**：一个 `nexttransformer/methods/<name>/` 目录，包含 `method.json` 和几个 hook。无需修改共享文件。
-2. **校准**到共同预算：`python -m nexttransformer.protocol.calibrate --methods <name> ...`
-3. **提交 pull request。** 准入之后用 `--formal` 训练，并在第二个 pull request 中提交结果。
+1. 先[开提案 issue](https://github.com/Interactive-Active-AI/NextTransformer/issues/new/choose)，讨论方法和实验计划。
+2. 在自己的 fork 上实现插件，按统一算力预算完成校准，并用 `--formal` 完成正式训练。
+3. 审计并导出结果后，再向上游 `main` 提交**一个 PR**，同时包含方法实现和正式结果，并关联提案 issue。
 
 从[插件指南](https://interactive-active-ai.github.io/NextTransformer/docs/zh-cn/guides/plugins/)和 [CONTRIBUTING.md](CONTRIBUTING.md) 开始。
 

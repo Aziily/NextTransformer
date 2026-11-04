@@ -25,4 +25,4 @@ body:
     id: plan
     attributes:
       label: Plan
-      description: Who implements it, whether a formal run is planned, and any open questions about the cost accounting.
+      description: Describe the planned formal run and any open questions. Open the method PR once you can submit the implementation and its audited result together.

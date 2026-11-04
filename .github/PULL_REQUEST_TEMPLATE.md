@@ -4,7 +4,7 @@
 
 ## Checklist
 
-- [ ] One method or one result per pull request.
+<!-- For a new method, complete both the New method and Result items and link the proposal issue. Arena entries follow their preregistration rules. -->
 - [ ] The training contract is unchanged: data, tokenizer, token budget, batch, schedule, seed and evaluation points.
 - [ ] **Result:** audit from `python -m nexttransformer.audit_run` in `evidence/audits/`, record written by `python -m nexttransformer.export_run`, a run-notes page, and tables refreshed with `python docs/scripts/generate.py`.
 - [ ] **New method:** plugin under `nexttransformer/methods/<method>/`, calibrated configuration and cost proof, tests, model card, and a source-notes entry.
