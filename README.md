@@ -169,13 +169,21 @@ Community projects that extend NextTransformer's code or protocol, each maintain
 repository. Their results come from their own setups, are not audited by the NextTransformer maintainers, and are not
 comparable with the leaderboard.
 
-| Project | Area | What it does | Author | Listed |
-|---|---|---|---|---|
-| **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)**<br><img src="https://img.shields.io/github/stars/Enderfga/NextTransformer-V?style=flat-square&label=stars" alt="GitHub stars"> | <img src="https://img.shields.io/badge/Multimodal-1BAF7A?style=flat-square" alt="Multimodal"> | Trains every NextTransformer method on frozen SigLIP2 image tokens interleaved with text at an 8,192-token context, compute-matched within 1% by NextTransformer's cost ledger. Its first study, pre-registered, asks where hybrid backbones read the 2D layout of an image. | [@Enderfga](https://github.com/Enderfga) | 2026-11 |
-
-**Add your project:** share it in [Show and tell](https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell)
-or open a pull request that adds a row. A listed project is public, builds on NextTransformer's code or protocol, and
-says so in its README.
+<table>
+<tr>
+<td width="50%" valign="top">
+<a href="https://github.com/Enderfga/NextTransformer-V"><img src="https://raw.githubusercontent.com/Enderfga/NextTransformer-V/8cd729800cea4ab23fdc5c083e8e2c68f2e654f7/docs/assets/banner.webp" alt="NextTransformer-V: a multimodal track for NextTransformer" width="100%"></a>
+<h3><a href="https://github.com/Enderfga/NextTransformer-V">NextTransformer-V</a></h3>
+<p><img src="https://img.shields.io/badge/Multimodal-1BAF7A?style=flat-square" alt="Multimodal"> by <a href="https://github.com/Enderfga">@Enderfga</a></p>
+<p>Every NextTransformer method on frozen SigLIP2 image tokens interleaved with text at an 8,192-token context, compute-matched within 1%. Its first study, pre-registered, asks where hybrid backbones read the 2D layout of an image.</p>
+</td>
+<td width="50%" align="center">
+<h3>Your project here</h3>
+<p>Built something on NextTransformer's code or protocol? Share it in <a href="https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell">Show and tell</a> or open a pull request that adds a card with a wide banner image.</p>
+<sub>Listed projects are public and say in their README that they build on NextTransformer.</sub>
+</td>
+</tr>
+</table>
 
 ## Roadmap
 
