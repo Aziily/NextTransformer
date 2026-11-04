@@ -10,6 +10,8 @@ import threading
 import subprocess
 import sys
 import time
+import tempfile
+import shutil
 from pathlib import Path
 from .common import GymError, canonical, identity, new_id, require, file_hash
 
@@ -129,6 +131,7 @@ class NativeBackend:
             "NANOCHAT_DTYPE": "float32",
             "TORCHDYNAMO_DISABLE": "1",
             "OMP_NUM_THREADS": "1",
+            "USER": "gym-worker",
             "PYTHONDONTWRITEBYTECODE": "1",
             "HOME": str(self.state_dir),
             "XDG_CACHE_HOME": str(self.state_dir / "cache"),
@@ -165,7 +168,7 @@ class NativeBackend:
             request = {"mode": "inspect", "candidate": candidate, "profile": profile}
             try:
                 result = subprocess.run(
-                    [self.python, "-m", "nexttransformer_gym.worker"],
+                    self.worker_command(request),
                     input=canonical(request) + "\n",
                     text=True,
                     capture_output=True,
@@ -173,6 +176,7 @@ class NativeBackend:
                     cwd=self.state_dir,
                     timeout=profile["timeout_sec"],
                     check=True,
+                    **self.worker_identity(request),
                 )
                 events = [
                     json.loads(line[len("GYM_EVENT ") :])
@@ -188,6 +192,25 @@ class NativeBackend:
                     "Trusted shape-only cost audit failed; inspect controller diagnostics.",
                 ) from None
         return self.cache[key]
+
+    def worker_command(self, request):
+        if request.get("quote", {}).get("operation") == "official":
+            # Official source is separately reviewed/admitted in an operator-owned snapshot.
+            return [self.python, "-m", "nexttransformer_gym.worker"]
+        from .isolation import command
+
+        return command(self.python, self.platform_root, request)
+
+    @staticmethod
+    def worker_identity(request):
+        # Docker controllers may be root for volume bootstrap. Namespace creation
+        # runs as an unprivileged UID; the worker receives no controller capabilities.
+        if (
+            os.geteuid() == 0
+            and request.get("quote", {}).get("operation") != "official"
+        ):
+            return {"user": 65534, "group": 65534, "extra_groups": []}
+        return {}
 
     @staticmethod
     def bound(report, operation, updates, profile):
@@ -282,6 +305,9 @@ class Scheduler:
                         self.store.update(db, sid, "job", job)
                         return True
                 candidate = self.store.get(db, sid, "candidate", quote["candidate_id"])
+                candidate["files"] = self.store.get(
+                    db, sid, "package", candidate["id"]
+                )["files"]
             try:
                 self.execute(sid, job, quote, candidate)
             except Exception:
@@ -296,7 +322,13 @@ class Scheduler:
     def execute(self, sid, job, quote, candidate):
         profile = self.backend.profiles[quote["profile_id"]]
         output_id = new_id()
-        output = self.backend.checkpoint_path(output_id)
+        workspace = tempfile.TemporaryDirectory(
+            prefix="worker-", dir=self.backend.state_dir
+        )
+        output = Path(workspace.name) / "checkpoint.pt"
+        if os.geteuid() == 0:
+            self.backend.state_dir.chmod(self.backend.state_dir.stat().st_mode | 0o111)
+            Path(workspace.name).chmod(0o777)
         request = {
             "mode": "execute",
             "candidate": candidate,
@@ -304,12 +336,13 @@ class Scheduler:
             "quote": quote,
             "output": str(output),
             "platform_root": str(self.backend.platform_root),
+            "final_output_root": str(self.backend.state_dir / "final-runs"),
             "checkpoint": str(self.backend.checkpoint_path(quote["checkpoint_id"]))
             if quote["checkpoint_id"]
             else None,
         }
         process = subprocess.Popen(
-            [self.backend.python, "-m", "nexttransformer_gym.worker"],
+            self.backend.worker_command(request),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -318,6 +351,7 @@ class Scheduler:
             env=self.backend.environment(profile, quote["operation"] == "official"),
             cwd=self.backend.state_dir,
             start_new_session=True,
+            **self.backend.worker_identity(request),
         )
         pending, result, cancelled, failure = None, None, False, None
         # Drain stderr to a bounded private log without blocking stdout.
@@ -455,10 +489,20 @@ class Scheduler:
                         self.store.put(db, sid, "report", {**result, "id": new_id()})
                     elif quote["operation"] != "official":
                         require(
-                            output.is_file(),
+                            output.is_file()
+                            and not output.is_symlink()
+                            and output.stat().st_nlink == 1
+                            and output.stat().st_size
+                            <= job.get(
+                                "checkpoint_reservation_bytes",
+                                profile["checkpoint_quota_bytes"],
+                            ),
                             "infrastructure_failure",
                             "Missing complete checkpoint.",
                         )
+                        retained = self.backend.checkpoint_path(output_id)
+                        retained.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(output, retained)
                         self.store.put(
                             db,
                             sid,
@@ -512,3 +556,4 @@ class Scheduler:
             (self.backend.state_dir / (job["id"] + ".diagnostic.log")).write_text(
                 "".join(diagnostics)
             )
+            workspace.cleanup()

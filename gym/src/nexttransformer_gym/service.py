@@ -192,6 +192,7 @@ class Service:
 
     def cost(self, db, sid, candidate_id, profile_id):
         candidate = self.store.get(db, sid, "candidate", candidate_id)
+        candidate["files"] = self.store.get(db, sid, "package", candidate_id)["files"]
         profile = self.profile(profile_id)
         report = self.backend.inspect(candidate, profile)
         require(
@@ -332,7 +333,8 @@ class Service:
             return {
                 "schema_version": "gym.api.v1",
                 "contract": CONTRACT,
-                "language": "ffn-expression-v1",
+                "language": "python",
+                "plugin_interface": "nexttransformer.models.plugins",
                 "profiles": list(self.backend.public_profiles()),
                 "operations": sorted(READS | MUTATIONS),
                 "required_checks": sorted(REQUIRED_CHECKS),

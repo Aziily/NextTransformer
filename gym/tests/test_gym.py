@@ -232,23 +232,35 @@ def test_crash_recovery_keeps_reservation(context):
     assert call("get_budget")["reserved"] == "0"
 
 
-def test_invalid_sources_never_execute():
+def rewrite_package(changes):
     import zipfile
 
-    for name, source in [
-        ("../outside", "x"),
-        ("plugin/research_ffn/__init__.py", 'import os; os.system("false")'),
-        ("plugin/research_ffn/__init__.py", 'FFN_EXPRESSION = __import__("os")'),
-    ]:
-        original = zipfile.ZipFile(io.BytesIO(candidate_bytes()))
-        files = {n: original.read(n) for n in original.namelist()}
-        files[name] = source.encode()
-        blob = io.BytesIO()
-        with zipfile.ZipFile(blob, "w") as out:
-            for n, data in files.items():
-                out.writestr(n, data)
+    with zipfile.ZipFile(io.BytesIO(candidate_bytes())) as original:
+        files = {name: original.read(name) for name in original.namelist()}
+    files.update({name: value.encode() for name, value in changes.items()})
+    blob = io.BytesIO()
+    with zipfile.ZipFile(blob, "w") as out:
+        for name, source in files.items():
+            out.writestr(name, source)
+    return blob.getvalue()
+
+
+def test_invalid_packages_never_execute(tmp_path):
+    for name in (
+        "../outside",
+        "torch.py",
+        "plugin/another/model.py",
+        "plugin/research_model/weights.pt",
+    ):
         with pytest.raises(GymError):
-            ingest(blob.getvalue())
+            ingest(rewrite_package({name: "payload"}))
+    marker = tmp_path / "must-not-exist"
+    source = f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+    accepted = ingest(rewrite_package({"plugin/research_model/__init__.py": source}))
+    assert accepted["files"]["plugin/research_model/__init__.py"] == source
+    assert not marker.exists()  # Ingestion does not import or interpret model source.
+    with pytest.raises(GymError):
+        ingest(rewrite_package({"architecture.json": '{"optimizer":"changed"}'}))
 
 
 def test_evidence_tampering_rejected(context):
@@ -290,31 +302,42 @@ def test_harbor_native_schema():
     assert [h.service for h in task.config.verifier.collect] == ["main", "gym"]
 
 
-def test_reference_lowering_loss_gradients_and_cost_parity():
-    import torch
-    from nexttransformer_gym.numerics import build, inspect, model_config
-    from nexttransformer.models import build_model
-    from nexttransformer.protocol.compute import audit_graph
+def test_native_model_loss_gradients_and_cost_parity():
+    import subprocess
+    import sys
 
-    candidate = ingest(candidate_bytes())
+    script = """import json,sys,torch
+from nexttransformer_gym.native_plugin import activate
+candidate,profile=json.load(sys.stdin)
+activate(candidate)
+from nexttransformer_gym.numerics import build,inspect,model_config
+from nexttransformer.models import build_model
+from nexttransformer.protocol.compute import audit_graph
+adapted=build(candidate,profile)
+reference=build_model(model_config(candidate,profile),'cpu',seed=42)
+assert type(adapted).__name__ == 'ResearchModel'
+x=torch.arange(8).reshape(1,8)
+a,b=adapted(x,x),reference(x,x)
+assert torch.equal(a,b)
+a.backward();b.backward()
+for (n,p),(m,q) in zip(adapted.named_parameters(),reference.named_parameters()):
+    assert n==m
+    assert (p.grad is None and q.grad is None) or torch.equal(p.grad,q.grad),n
+report=inspect(candidate,profile)
+original=audit_graph(model_config(candidate,profile),batch=1)
+assert sum(int(report[k]) for k in ('forward','backward','optimizer'))==original['total']
+"""
     profile = json.loads((ROOT / "gym/examples/profiles.fixture.json").read_text())[
         "research-fixture"
     ]
-    adapted = build(candidate, profile)
-    reference = build_model(model_config(candidate, profile), "cpu", seed=42)
-    x = torch.arange(8).reshape(1, 8)
-    a, b = adapted(x, x), reference(x, x)
-    assert torch.equal(a, b)
-    a.backward()
-    b.backward()
-    for (_, p), (_, q) in zip(adapted.named_parameters(), reference.named_parameters()):
-        assert (p.grad is None and q.grad is None) or torch.equal(p.grad, q.grad)
-    report = inspect(candidate, profile)
-    original = audit_graph(model_config(candidate, profile), batch=1)
-    assert (
-        sum(int(report[k]) for k in ("forward", "backward", "optimizer"))
-        == original["total"]
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        input=json.dumps([ingest(candidate_bytes()), profile]),
+        text=True,
+        capture_output=True,
+        timeout=60,
     )
+    assert result.returncode == 0, result.stderr
 
 
 def test_dev_only_stream_and_reference_packing_parity(tmp_path):
@@ -590,69 +613,105 @@ def test_expired_quote_cannot_reserve_budget(context):
     assert call("get_budget")["reserved"] == "0"
 
 
-def test_generated_plugin_is_exact_pointwise_lowering():
-    import ast
-    from nexttransformer_gym.lowering import plugin_source
+def test_native_plugin_staging_preserves_every_source_file(tmp_path):
+    from nexttransformer_gym.native_plugin import write_plugin
 
-    candidate = ingest(candidate_bytes())
-    source = plugin_source(candidate["expression"])
-    ast.parse(source)
-    assert "return self.c_proj((F.relu(x)).square())" in source
-    assert source == plugin_source(candidate["expression"])
+    candidate = ingest(candidate_bytes("tanh"))
+    candidate["files"]["plugin/research_model/model.py"] = candidate["files"][
+        "plugin/research_model/model.py"
+    ].replace("\n", "\r\n")
+    plugin = write_plugin(candidate, tmp_path)
+    assert len(list(plugin.glob("*.py"))) == 3
+    prefix = "plugin/" + candidate["method"] + "/"
+    for name, source in candidate["files"].items():
+        if name.startswith(prefix):
+            assert (plugin / name[len(prefix) :]).read_bytes() == source.encode("utf-8")
+    assert candidate["architecture"]["options"]["activation"] == "tanh"
 
 
-def test_official_plugin_lowering_matches_research_path(tmp_path):
+def test_same_package_loads_directly_in_native_nexttransformer(tmp_path):
     import os
     import subprocess
     import sys
-    from nexttransformer_gym.lowering import plugin_source
+    from nexttransformer_gym.native_plugin import write_plugin
 
-    candidate = ingest(candidate_bytes("tanh"))
-    plugin = tmp_path / "gym_test_ffn"
-    plugin.mkdir()
-    (plugin / "__init__.py").write_text(plugin_source(candidate["expression"]))
-    (plugin / "method.json").write_text(
-        json.dumps(
-            {
-                "name": "gym_test_ffn",
-                "family": "others",
-                "options": {},
-                "shell": {"layers": 2, "mlp_width": 128, "window_pattern": "L"},
-            }
-        )
-    )
-    script = """import json,sys,torch
-from nexttransformer.models.config import ModelConfig
-from nexttransformer.models import build_model
-from nexttransformer_gym.numerics import build
-candidate,profile=json.loads(sys.stdin.read())
-formal_plugin=build_model(ModelConfig(method='gym_test_ffn',width=32,heads=2,vocab_size=64,
-    sequence_len=8,mlp_width=128,layers=2,scale='debug',window_pattern='L'),'cpu',seed=42)
-research=build(candidate,profile)
+    candidate = ingest(candidate_bytes("silu"))
+    write_plugin(candidate, tmp_path)
+    script = """import hashlib,json,sys,torch
+candidate,mode=json.load(sys.stdin)
+if mode == "gym":
+    from nexttransformer_gym.native_plugin import activate
+    activate(candidate)
+    from nexttransformer_gym.numerics import build
+    model=build(candidate,dict(width=32,heads=2,sequence_len=8,vocab_size=64,device="cpu"))
+else:
+    # Independent native entry: no Gym imports, parser, config adapter or source transformation.
+    from nexttransformer.models.config import ModelConfig
+    from nexttransformer.models import build_model
+    declaration=candidate["declaration"]
+    choices=dict(candidate["architecture"])
+    choices["options"]={**declaration["options"],**choices.get("options",{})}
+    config=ModelConfig(method=candidate["method"],width=32,heads=2,sequence_len=8,vocab_size=64,scale="debug",**choices)
+    model=build_model(config,"cpu",seed=42)
 x=torch.arange(8).reshape(1,8)
-a,b=formal_plugin(x,x),research(x,x)
-assert torch.equal(a,b), (a,b)
-a.backward(); b.backward()
-for (n,p),(m,q) in zip(formal_plugin.named_parameters(),research.named_parameters()):
-    assert n==m
-    assert (p.grad is None and q.grad is None) or torch.equal(p.grad,q.grad), n
+loss=model(x,x);loss.backward()
+h=hashlib.sha256()
+for name,p in model.named_parameters():
+    h.update(name.encode());h.update(p.detach().numpy().tobytes())
+    if p.grad is not None:h.update(p.grad.numpy().tobytes())
+print(json.dumps({"loss":loss.item(),"parameters_and_gradients":h.hexdigest(),"class":type(model).__name__,"config":model.config.serialized()}))
 """
-    profile = json.loads((ROOT / "gym/examples/profiles.fixture.json").read_text())[
-        "research-fixture"
-    ]
-    env = dict(
-        os.environ,
-        NEXTTRANSFORMER_METHOD_PATHS=str(tmp_path),
-        NANOCHAT_DTYPE="float32",
-        TORCHDYNAMO_DISABLE="1",
+    results = []
+    for mode in ("native", "gym"):
+        env = dict(
+            os.environ,
+            NEXTTRANSFORMER_METHOD_PATHS=str(tmp_path) if mode == "native" else "",
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            input=json.dumps([candidate, mode]),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        results.append(json.loads(result.stdout.splitlines()[-1]))
+    assert results[0] == results[1]
+    assert results[0]["class"] == "ResearchModel"
+    accepted = ingest(
+        rewrite_package({"architecture.json": json.dumps(results[0]["config"])})
     )
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        input=json.dumps([candidate, profile]),
-        text=True,
-        capture_output=True,
-        env=env,
-        timeout=60,
-        cwd=ROOT,
-    )
-    assert result.returncode == 0, result.stderr
+    assert accepted["architecture"] == results[0]["config"]
+
+
+def test_native_worker_cannot_read_controller_files_or_reach_host(context, tmp_path):
+    import socket
+
+    service, _, call, _ = context
+    private = tmp_path / "controller-secret"
+    private.write_text("not-for-workers")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        checks = f"""from pathlib import Path
+import socket
+assert not Path({str(private)!r}).exists()
+assert not Path({str(service.store.path)!r}).exists()
+s=socket.socket();s.settimeout(0.2)
+assert s.connect_ex(("127.0.0.1",{port})) != 0
+s.close()
+"""
+        source = runpy.run_path(str(ROOT / "gym/examples/make_candidate.py"))["ENTRY"]
+        candidate = call(
+            "submit_candidate",
+            package_base64=base64.b64encode(
+                rewrite_package({"plugin/research_model/__init__.py": checks + source})
+            ).decode(),
+            idempotency_key="isolation-probe",
+        )
+        report = call(
+            "inspect_cost", candidate_id=candidate["id"], profile_id="research-fixture"
+        )
+        assert report["coverage"] == "complete"

@@ -62,6 +62,7 @@ def launch_final_run(service, session_id, submission_id, allocation, idempotency
         owner = new_id()
         s.put(db, owner, "account", {"id": owner, "limit": str(allocation)})
         s.put(db, owner, "candidate", candidate)
+        s.put(db, owner, "package", s.get(db, session_id, "package", candidate["id"]))
         quote = s.put(
             db,
             owner,

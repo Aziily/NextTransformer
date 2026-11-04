@@ -6,36 +6,50 @@ supported subset and release gates, not a change to the scientific protocol.
 
 ## Candidate runtime
 
-`reference_plugin_v1` currently supports the FFN hook through the closed
-`ffn-expression-v1` language. Source is a single literal assignment to
-`FFN_EXPRESSION`. The tree contains `op` and `args`; operators are `input`,
-`relu`, `square`, `silu`, `tanh`, `add`, and `mul`. Depth is less than eight.
-Expressions are pointwise over the hidden channel projection and cannot index
-future tokens, inspect labels, access files, import modules or branch on values.
+`reference_plugin_v1` uses NextTransformer's existing native Python plugin
+contract. `method.json` has the same `name`, `family`, `options`, `debug_options`,
+`shell` and `layer_multiple` semantics as `nexttransformer/models/plugins.py`.
+`__init__.py` exports native hooks: `model`, `mixer`, `ffn`, `block`, and the
+associated initialization/check/stage hooks. A `model` subclasses `ReferenceLM`.
+The native loader validates hook compatibility and the shared projection layout.
+There is no Gym expression language or model-source translation.
 
-The trusted runtime supplies the two projections and the unchanged ReferenceLM
-shell. Architecture configuration contains `layers` (1–64) and `mlp_ratio`
-(3–5). Execution profiles pin all other dimensions, data and schedules. This
-allows bounded FFN invention; arbitrary attention, model hooks, Python modules
-and kernels are explicitly rejected before dispatch, not executed on trust.
-
-The four-file ZIP layout is exactly:
+The submission envelope follows the design document:
 
 ```
 proposal.json
 architecture.json
 plugin/<method>/method.json
 plugin/<method>/__init__.py
+plugin/<method>/<optional local Python modules>
 ```
 
-`proposal.json` uses schema `gym.candidate.v1`, SDK `reference_plugin_v1`,
-`method`, optional `parent_ids`, and a human-readable hypothesis. `method.json`
-is `{ "name": "<method>", "family": "others", "hook": "ffn",
-"language": "ffn-expression-v1" }`. The example builder supplies a complete
-package. Packages are at most 1 MiB and 32 entries; this contract accepts exactly
-four files. Absolute/traversal/duplicate paths, symlinks, extra modules, binaries,
-installers and executable Python are rejected. The control service never imports
-candidate source. The source/configuration hash is server computed.
+The plugin directory is copied byte-for-byte to a worker plugin root (loaded with
+`NEXTTRANSFORMER_METHOD_PATHS`) or the final snapshot's
+`nexttransformer/methods/<method>/`. Relative imports and local packages work through
+the native loader. The same original method name, source files and metadata reach
+both paths; no generated replacement model is used.
+
+`architecture.json` contains native `ModelConfig` fields and the plugin's declared
+`options`. Native validation owns architecture constraints. Execution profiles pin
+width, heads, context, vocabulary and formal/debug scale; explicit submitted values
+must match. A serialized native config may include the fixed seed and scale unchanged.
+Optimizer settings, data paths and commands are not architecture fields. Formal admission still enforces the unchanged scientific protocol.
+
+`proposal.json` is Gym identity/provenance metadata only: schema `gym.candidate.v1`,
+SDK `reference_plugin_v1`, method, optional parent IDs and hypothesis. Packages are
+bounded to 1 MiB and 32 text files. Traversal, symlinks, duplicate paths, runtime
+shadowing, binaries, weights and dependency installers are rejected. Additional
+Python files must remain inside the declared plugin. Ingestion reads metadata and
+configuration without importing, interpreting or rewriting model source. Syntax,
+imports, native hooks, shapes and numerical behavior are checked in the worker.
+
+Research imports, shape inspection and numerical execution run in fresh bubblewrap
+user/mount/PID/network namespaces. Only runtime libraries, read-only platform code,
+approved data and the current job's output/checkpoint are mounted. Controller
+state, credential volumes, host processes and host networking are not mounted.
+There is no unsandboxed research fallback. The shipped sandbox maps CPU resources;
+GPU device isolation requires a deployment-specific worker configuration.
 
 ## API and persistence
 
@@ -63,7 +77,13 @@ the account remains concurrency-safe across simultaneous callers.
 
 Static analysis uses the existing shape-only FakeTensor/ATen cost convention,
 including separate initialization, forward, backward, optimizer, prediction and
-trusted dev-scoring paths. Only branch-free supported source can reach this audit.
+dev-scoring paths. This audits the traced native execution for the selected config.
+It does not prove coverage of every data-dependent Python branch. Native Python
+shares a process with numerical accounting and scoring code: namespace isolation
+is not a proof against malicious monkeypatching, forged worker messages or hidden
+computation. The native path therefore assumes protocol-conforming cohort code;
+arbitrary adversarial Python accounting requires an additional execution trust
+boundary before production use. Reports explicitly identify their traced scope.
 Each numerical operation requires a durable intent and controller acknowledgement.
 The worker then reports completion using a unique charge identity. Unknown work
 retains its reservation. A stopped crashed worker can be explicitly reconciled
@@ -115,8 +135,8 @@ Harbor verifier checks a receipt against HMAC-authenticated server evidence and
 its trusted per-trial binding. Reward 1 means deliverable validity only. There is
 no automatic final launch, model performance reward or leaderboard rank.
 
-`prepare-final` creates a separate Git snapshot, lowers the expression into a
-standard plugin, re-audits the selected configuration without searching for a
+`prepare-final` creates a separate Git snapshot, copies the original native plugin
+without modification, re-audits the selected configuration without searching for a
 replacement, runs native admission and pins a source/configuration manifest.
 It never changes the source repository or launches training. `launch-final`
 requires a verified submission and a distinct finite allocation. The official
@@ -135,7 +155,7 @@ and bounded allocation. The full 49.152B-token run is not part of development te
 
 ## Remaining release validation
 
-The short CPU path and reference lowering/packing/continuation parity are tested.
+The short CPU path and native loading/loss/gradient/cost/packing/continuation parity are tested.
 A production GPU deployment still requires its image/hardware/runtime parity
 validation, dataset/tokenizer manifests, appropriate memory/storage quotas and
 full formal-run acceptance. The initial worker pool is single-slot and has no

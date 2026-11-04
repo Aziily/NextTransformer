@@ -1,57 +1,77 @@
-"""Source-only ingestion and a closed, non-executable FFN expression language.
+"""Source-only native plugin packages; ingestion never imports participant code."""
 
-Python is a serialization syntax here, never imported, compiled or evaluated.
-Only one literal assignment is accepted; arithmetic is lowered by trusted code.
-"""
-
-import ast
 import io
 import json
 import re
 import stat
 import zipfile
+from dataclasses import fields
 from .common import GymError, identity, require
 
 LIMIT = 1 << 20
 CONTRACT = "reference_plugin_v1"
-OPS = {"input": 0, "relu": 1, "square": 1, "silu": 1, "tanh": 1, "add": 2, "mul": 2}
 
 
-def expression(node, depth=0):
+def validate_metadata(method, declaration, architecture):
+    from nexttransformer.models.plugins import FAMILIES, SHELL, _value
+    from nexttransformer.models.registry import BUILTIN_METHODS, MIXER_KINDS
+    from nexttransformer.models.config import ModelConfig
+
     require(
-        depth < 8 and isinstance(node, dict) and set(node) == {"op", "args"},
-        "unsupported_operator",
-        "Use a bounded FFN expression tree.",
+        method not in (*BUILTIN_METHODS, *MIXER_KINDS),
+        "invalid_artifact",
+        "A plugin cannot replace a registered method.",
     )
-    op, args = node["op"], node["args"]
     require(
-        isinstance(op, str)
-        and op in OPS
-        and isinstance(args, list)
-        and len(args) == OPS[op],
-        "unsupported_operator",
-        "Unsupported expression operator or arity.",
+        isinstance(declaration, dict)
+        and declaration.get("name") == method
+        and declaration.get("family") in FAMILIES,
+        "incompatible_contract",
+        "Use the native method.json declaration.",
     )
-    for arg in args:
-        expression(arg, depth + 1)
-    return node
-
-
-def parse_source(source):
-    try:
-        body = ast.parse(source).body
-        require(
-            len(body) == 1
-            and isinstance(body[0], ast.Assign)
-            and len(body[0].targets) == 1
-            and isinstance(body[0].targets[0], ast.Name)
-            and body[0].targets[0].id == "FFN_EXPRESSION",
-            "incomplete_coverage",
-            "This runtime accepts only FFN_EXPRESSION = <literal>; arbitrary Python is not executable.",
-        )
-        return expression(ast.literal_eval(body[0].value))
-    except (SyntaxError, ValueError, TypeError, RecursionError):
-        raise GymError("invalid_artifact", "Invalid expression source.") from None
+    options = declaration.get("options", {})
+    require(
+        isinstance(options, dict)
+        and all(
+            re.fullmatch(r"[a-z][a-z0-9_]{1,40}", k) and _value(v)
+            for k, v in options.items()
+        ),
+        "invalid_artifact",
+        "Invalid native plugin options.",
+    )
+    require(
+        isinstance(declaration.get("shell", {}), dict)
+        and set(declaration.get("shell", {})) <= set(SHELL)
+        and isinstance(declaration.get("debug_options", {}), dict)
+        and set(declaration.get("debug_options", {})) <= set(options)
+        and type(declaration.get("layer_multiple", 1)) is int
+        and declaration.get("layer_multiple", 1) > 0,
+        "invalid_artifact",
+        "Invalid native shell, debug options or layer multiple.",
+    )
+    # These are the existing ModelConfig fields, not a second architecture DSL.
+    allowed = {field.name for field in fields(ModelConfig)}
+    require(
+        isinstance(architecture, dict) and set(architecture) <= allowed,
+        "invalid_artifact",
+        "architecture.json accepts native ModelConfig fields; protocol/optimizer/data overrides are not accepted.",
+    )
+    require(
+        architecture.get("method", method) == method,
+        "incompatible_contract",
+        "Config method must match the plugin.",
+    )
+    require(
+        architecture.get("routing_seed", 1729) == 1729,
+        "incompatible_contract",
+        "The native routing seed is fixed by the execution protocol.",
+    )
+    require(
+        isinstance(architecture.get("options", {}), dict)
+        and set(architecture.get("options", {})) <= set(options),
+        "invalid_artifact",
+        "Config options must be declared by the plugin.",
+    )
 
 
 def ingest(blob):
@@ -101,7 +121,7 @@ def ingest(blob):
                 "nexttransformer_gym",
             },
             "invalid_artifact",
-            "Invalid candidate method name.",
+            "Invalid plugin package name.",
         )
         require(
             proposal["schema_version"] == "gym.candidate.v1"
@@ -110,39 +130,31 @@ def ingest(blob):
             "Unsupported candidate contract.",
         )
         prefix = f"plugin/{method}/"
+        required = {
+            "proposal.json",
+            "architecture.json",
+            prefix + "method.json",
+            prefix + "__init__.py",
+        }
         require(
-            set(files)
-            == {
-                "proposal.json",
-                "architecture.json",
-                prefix + "method.json",
-                prefix + "__init__.py",
-            },
+            required <= set(files)
+            and all(
+                name in required
+                or (
+                    name.startswith(prefix)
+                    and name.endswith(".py")
+                    and all(
+                        part.isidentifier()
+                        for part in name[len(prefix) : -3].split("/")
+                    )
+                )
+                for name in files
+            ),
             "invalid_artifact",
-            "Only the four declared source and metadata files are supported.",
+            "Only metadata and local Python modules inside the declared plugin are accepted.",
         )
         declaration = json.loads(files[prefix + "method.json"])
-        require(
-            declaration
-            == {
-                "name": method,
-                "family": "others",
-                "hook": "ffn",
-                "language": "ffn-expression-v1",
-            },
-            "incompatible_contract",
-            "Use the documented FFN expression declaration.",
-        )
-        require(
-            isinstance(architecture, dict)
-            and set(architecture) == {"layers", "mlp_ratio"}
-            and type(architecture["layers"]) is int
-            and 1 <= architecture["layers"] <= 64
-            and type(architecture["mlp_ratio"]) is int
-            and 3 <= architecture["mlp_ratio"] <= 5,
-            "invalid_artifact",
-            "Architecture must contain layers (1–64) and mlp_ratio (3–5).",
-        )
+        validate_metadata(method, declaration, architecture)
         parents = proposal.get("parent_ids", [])
         require(
             isinstance(parents, list)
@@ -151,13 +163,12 @@ def ingest(blob):
             "invalid_artifact",
             "Invalid candidate lineage.",
         )
-        tree = parse_source(files[prefix + "__init__.py"])
         return {
             "files": files,
             "hash": identity(files),
             "configuration_hash": identity(architecture),
             "architecture": architecture,
-            "expression": tree,
+            "declaration": declaration,
             "method": method,
             "parent_ids": parents,
             "contract": CONTRACT,

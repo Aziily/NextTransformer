@@ -37,7 +37,8 @@ PYTHONPATH=gym/src:. NANOCHAT_DTYPE=float32 TORCHDYNAMO_DISABLE=1 \
   uv run --project gym --extra worker python -m pytest -q gym/tests
 ```
 
-The client itself has no training imports. The optional `worker` dependency group
+Native research workers require bubblewrap on the controller host (the service
+image includes it), with unprivileged user namespaces enabled. The client itself has no training imports. The optional `worker` dependency group
 installs the CPU numerical runtime for these bounded checks. Production GPU images
 need their own pinned, reviewed dependencies and compatibility evidence.
 
@@ -61,7 +62,7 @@ uv run --project gym --extra worker python gym/run_trial.py \
 ```
 
 The numerical cap above is an explicit **fixture example**, not a production default.
-Omitting the allocation refuses launch. The oracle submits two FFN candidates,
+Omitting the allocation refuses launch. The oracle submits two native model configurations,
 trains them through the API, continues one checkpoint, validates the final choice,
 and writes a receipt. Harbor collects actual main-container runtime state and
 signed Gym evidence, then starts the separate verifier.
@@ -85,6 +86,24 @@ container. The Agent receives only JSON research actions, not a shell tool.
 Model calls are not part of the default oracle/test run; inference cost metering
 remains deferred. Generic Harbor agents can use the same API but do not inherit
 this restricted tool policy automatically.
+
+## Native plugin compatibility
+
+A candidate contains the original native plugin directory and model configuration,
+plus Gym submission metadata. `method.json`, `__init__.py` and local Python modules
+are preserved unchanged. Use `model = YourReferenceLMSubclass`, `mixer`, `ffn`, or
+`block` exactly as documented in `nexttransformer/models/plugins.py`; the platform
+does not inspect a model expression tree. `architecture.json` contains native
+`ModelConfig` fields and declared `options`. The example is a multi-file `model`
+plugin, and tests compare its direct native load with the Gym path exactly.
+
+```sh
+python gym/examples/make_candidate.py candidate.zip --activation silu
+```
+
+Research cost reports are native trace estimates, not a proof of all arbitrary
+Python branches. The OS sandbox separates worker files/processes/networking;
+production adversarial accounting and scoring isolation remain a separate gate.
 
 ## Client flow
 
@@ -115,8 +134,8 @@ post-run snapshots are also retained as `agent-runtime.json` artifacts.
 Finalization and Harbor verification never launch training. Trusted controller
 commands live in `nt-gym`, with required `--state`, `--profiles`, and `--platform`:
 
-- `prepare-final`: create a separate staging Git snapshot, lower the selected
-  source, re-audit its unchanged configuration and write an admitted pipeline plan.
+- `prepare-final`: create a separate staging Git snapshot, copy the selected
+  native plugin unchanged, re-audit its configuration and write an admitted pipeline plan.
   It performs no numerical training and leaves the source repository untouched.
 - `launch-final`: verify frozen identities, allocate a separate finite budget and
   queue fresh initialization. Agent/verifier HTTP credentials cannot call it.

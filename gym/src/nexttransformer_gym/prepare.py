@@ -8,7 +8,7 @@ import json
 import subprocess
 from pathlib import Path
 from .common import file_hash, require
-from .lowering import plugin_source
+from .native_plugin import write_plugin
 
 
 def prepare_snapshot(service, session_id, candidate_id, destination, resources):
@@ -25,6 +25,9 @@ def prepare_snapshot(service, session_id, candidate_id, destination, resources):
     )
     with service.store.transaction() as db:
         candidate = service.store.get(db, session_id, "candidate", candidate_id)
+        candidate["files"] = service.store.get(db, session_id, "package", candidate_id)[
+            "files"
+        ]
     subprocess.run(
         [
             "git",
@@ -37,40 +40,27 @@ def prepare_snapshot(service, session_id, candidate_id, destination, resources):
         ],
         check=True,
     )
-    method = "gym_" + candidate["hash"][:24]
-    plugin = destination / "nexttransformer" / "methods" / method
-    plugin.mkdir()
-    (plugin / "__init__.py").write_text(plugin_source(candidate["expression"]))
-    (plugin / "method.json").write_text(
-        json.dumps(
-            {
-                "name": method,
-                "family": "others",
-                "title": method,
-                "options": {},
-                "shell": {
-                    "layers": candidate["architecture"]["layers"],
-                    "mlp_width": 1536 * candidate["architecture"]["mlp_ratio"],
-                    "window_pattern": "L",
-                },
-            }
-        )
-    )
+    method = candidate["method"]
+    write_plugin(candidate, destination / "nexttransformer" / "methods")
     env = service.backend.environment()
-    env["PYTHONPATH"] = str(destination)
-    config = f"configs/others/{method}.json"
-    # All dynamic source is produced from validated integers and a fixed method identity.
-    bootstrap = """import sys
+    env["PYTHONPATH"] = (
+        str(destination) + ":" + str(Path(__file__).resolve().parent.parent)
+    )
+    config = f"configs/{candidate['declaration']['family']}/{method}.json"
+    bootstrap = """import json,sys
 from pathlib import Path
-from nexttransformer.models.config import candidate_config
+from nexttransformer_gym.native_plugin import model_config
 from nexttransformer.protocol.spec import write_config
-method, output, candidate_hash = sys.argv[1:]
-write_config(Path(output), candidate_config(method), {
-    "status": "gym_frozen_selection", "candidate_hash": candidate_hash,
+candidate=json.load(sys.stdin)
+profile=dict(width=1536,heads=12,sequence_len=2048,vocab_size=32768,formal_dimensions=True)
+write_config(Path(sys.argv[1]), model_config(candidate,profile), {
+    "status":"gym_frozen_selection", "candidate_hash":candidate["hash"],
 })
 """
     subprocess.run(
-        [service.backend.python, "-c", bootstrap, method, config, candidate["hash"]],
+        [service.backend.python, "-c", bootstrap, config],
+        input=json.dumps(candidate),
+        text=True,
         cwd=destination,
         env=env,
         check=True,
@@ -97,20 +87,18 @@ write_config(Path(output), candidate_config(method), {
         timeout=600,
     )
     # Admission checks the unchanged selected architecture; calibration may not pick a replacement.
-    admission = """import sys
+    admission = """import json,sys
+from nexttransformer_gym.native_plugin import model_config
 from nexttransformer.protocol.admission import admit_config
+candidate=json.load(sys.stdin)
 config, proof = admit_config(sys.argv[1])
-assert config.layers == int(sys.argv[2]) and config.mlp_width == int(sys.argv[3])
+profile=dict(width=1536,heads=12,sequence_len=2048,vocab_size=32768,formal_dimensions=True)
+assert config == model_config(candidate,profile), "Calibration changed the frozen model config"
 """
     subprocess.run(
-        [
-            service.backend.python,
-            "-c",
-            admission,
-            config,
-            str(candidate["architecture"]["layers"]),
-            str(1536 * candidate["architecture"]["mlp_ratio"]),
-        ],
+        [service.backend.python, "-c", admission, config],
+        input=json.dumps(candidate),
+        text=True,
         cwd=destination,
         env=env,
         check=True,
@@ -172,7 +160,7 @@ assert config.layers == int(sys.argv[2]) and config.mlp_width == int(sys.argv[3]
         "config": config,
         "resources": str(Path(resources).resolve()),
         "method": method,
-        "initialization_flops": 2 * initialization,
+        "initialization_flops": initialization,
         "manifest": {
             p.relative_to(destination).as_posix(): file_hash(p) for p in files
         },

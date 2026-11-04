@@ -1,73 +1,21 @@
-"""Trusted lowering into the unchanged NextTransformer model shell.
+"""Native model construction and NextTransformer cost inspection in a worker."""
 
-Participant Python never reaches import machinery. The only variable computation
-is a finite, branch-free tree of causal pointwise operations, validated twice.
-"""
-
-from .package import expression
-
-
-def apply_tree(tree, x):
-    import torch.nn.functional as F
-
-    op = tree["op"]
-    if op == "input":
-        return x
-    args = [apply_tree(arg, x) for arg in tree["args"]]
-    if op == "relu":
-        return F.relu(args[0])
-    if op == "square":
-        return args[0].square()
-    if op == "silu":
-        return F.silu(args[0])
-    if op == "tanh":
-        return args[0].tanh()
-    if op == "add":
-        return args[0] + args[1]
-    if op == "mul":
-        return args[0] * args[1]
-    raise ValueError("Uncovered operation")
-
-
-def model_config(candidate, profile):
-    from nexttransformer.models.config import ModelConfig
-
-    return ModelConfig(
-        method="dense_full",
-        width=profile["width"],
-        heads=profile["heads"],
-        sequence_len=profile["sequence_len"],
-        vocab_size=profile["vocab_size"],
-        layers=candidate["architecture"]["layers"],
-        mlp_width=profile["width"] * candidate["architecture"]["mlp_ratio"],
-        window_pattern="L",
-        scale="formal" if profile.get("formal_dimensions") else "debug",
-    )
+from .native_plugin import activate, model_config, check_interface
 
 
 def build(candidate, profile):
-    from torch import nn
+    activate(candidate)
     from nexttransformer.models import build_model
 
-    tree = expression(candidate["expression"])
     model = build_model(
         model_config(candidate, profile), profile.get("device", "cpu"), seed=42
     )
-
-    class ExpressionMLP(nn.Module):
-        def __init__(self, original):
-            super().__init__()
-            self.c_fc, self.c_proj = original.c_fc, original.c_proj
-
-        def forward(self, x):
-            return self.c_proj(apply_tree(tree, self.c_fc(x)))
-
-    for block in model.transformer.h:
-        block.mlp = ExpressionMLP(block.mlp)
+    check_interface(model)
     return model
 
 
 def inspect(candidate, profile):
+    activate(candidate)
     import torch
     from torch._subclasses.fake_tensor import FakeTensorMode
     from nexttransformer.protocol.compute import (
@@ -125,5 +73,5 @@ def inspect(candidate, profile):
         "training_flops_per_token": report["total"] / x.numel(),
         "anchor_ratio": report["total"] / x.numel() / 4672398325.44785,
         "accounting_version": report["formula_version"],
-        "scope": "fixed-shape branch-free FFN expression on trusted ReferenceLM",
+        "scope": "native plugin trace for the pinned configuration; not a proof of every Python branch",
     }

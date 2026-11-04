@@ -33,10 +33,14 @@ services:
       - verifier-auth:/run/verifier-auth
       - gym-export:/export
     cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
+    cap_add: [SETUID, SETGID]
     cpus: 2
     mem_limit: 4g
     pids_limit: 256
+    # Native plugin workers create their own user/mount/PID/network namespaces.
+    # Only UID/GID switching is allowed to launch unprivileged workers. Workers
+    # drop all capabilities and have no controller procfs, host socket or network.
+    security_opt: ["no-new-privileges:true", "seccomp:unconfined", "apparmor:unconfined"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2)"]
       interval: 2s

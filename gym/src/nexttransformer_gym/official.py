@@ -233,20 +233,39 @@ def run(request):
     from nexttransformer.protocol.spec import Protocol
 
     config, proof = admit_config(root / plan["config"])
-    require(
-        config.method == plan["method"]
-        and config.layers == candidate["architecture"]["layers"]
-        and config.mlp_width == config.width * candidate["architecture"]["mlp_ratio"],
-        "incompatible_contract",
-        "Admitted architecture differs from the frozen selection.",
-    )
-    from .lowering import plugin_source
+    from .native_plugin import model_config
 
-    source = root / "nexttransformer" / "methods" / plan["method"] / "__init__.py"
+    expected = model_config(
+        candidate,
+        dict(
+            width=1536,
+            heads=12,
+            sequence_len=2048,
+            vocab_size=32768,
+            formal_dimensions=True,
+        ),
+    )
     require(
-        source.read_text() == plugin_source(candidate["expression"]),
+        config == expected and config.method == plan["method"],
         "incompatible_contract",
-        "Official plugin is not the trusted lowering of the frozen source.",
+        "Admitted config differs from the frozen native model config.",
+    )
+    prefix = "plugin/" + candidate["method"] + "/"
+    plugin = root / "nexttransformer" / "methods" / candidate["method"]
+    expected_files = {
+        name[len(prefix) :]: source
+        for name, source in candidate["files"].items()
+        if name.startswith(prefix)
+    }
+    actual_files = {
+        path.relative_to(plugin).as_posix(): path.read_bytes().decode("utf-8")
+        for path in plugin.rglob("*")
+        if path.is_file() and path.suffix in {".py", ".json"}
+    }
+    require(
+        actual_files == expected_files,
+        "incompatible_contract",
+        "Staged plugin differs from the frozen source package.",
     )
     protocol = Protocol()
     training_rate = Fraction(
@@ -265,7 +284,7 @@ def run(request):
         "resource_unavailable",
         "Visible GPUs differ from the explicit final allocation.",
     )
-    output = Path(request["output"]).parent / (quote["id"] + "-official")
+    output = Path(request["final_output_root"]) / (quote["id"] + "-official")
     output.mkdir(parents=True, exist_ok=False)
 
     # Whole-run reservation remains unsettled until the trusted pipeline terminates.

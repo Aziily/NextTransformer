@@ -266,6 +266,10 @@ def execute(request):
 
 def main():
     request = json.loads(sys.stdin.readline())
+    if request.get("quote", {}).get("operation") != "official":
+        from .native_plugin import activate
+
+        activate(request["candidate"])
     if request["mode"] == "inspect":
         from .numerics import inspect
 

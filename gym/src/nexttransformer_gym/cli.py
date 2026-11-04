@@ -12,7 +12,7 @@ def load(args):
     profiles = json.loads(args.profiles.read_text())
     backend = NativeBackend(profiles, args.state, args.platform)
     references = {
-        "ffn-expression-v1": "Use FFN_EXPRESSION = a literal tree of input/relu/square/silu/tanh/add/mul. No imports or executable Python.",
+        "native-plugin": "Use native method.json and ModelConfig architecture fields. Define mixer, ffn, block or a ReferenceLM model subclass. Local Python modules are supported.",
         "final-separation": "Finalization freezes one architecture. Verification does not launch training or award a performance score.",
     }
     for key, relative in {
