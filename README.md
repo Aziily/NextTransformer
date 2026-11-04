@@ -33,6 +33,7 @@ result is an audited, file-backed record, and AI agents can research new archite
 
 ## News
 
+- <img src="https://img.shields.io/badge/COMMUNITY-2A78D6?style=flat-square" alt="Community" height="18"> **2026-11-04** · **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)** by [@Enderfga](https://github.com/Enderfga): a community multimodal track that trains every NextTransformer method on interleaved image and text tokens under the same compute-matched contract. Its first study, pre-registered, asks where hybrid backbones get the 2D layout of an image.
 - <img src="https://img.shields.io/badge/NEW-E5607E?style=flat-square" alt="New" height="18"> **2026-10-31** · NextTransformer is now open source: 31 finished runs, 36 model cards, the full protocol, the documentation and the observatory.
 - <img src="https://img.shields.io/badge/SOON-8B5CF6?style=flat-square" alt="Soon" height="18"> **By 2026-11-14** · **Arena v2**, with full support for autonomous agent research.
 - <img src="https://img.shields.io/badge/SOON-8B5CF6?style=flat-square" alt="Soon" height="18"> **November 2026** · Training recipes for **400B tokens and larger models**.
@@ -178,6 +179,19 @@ More on the [roadmap](https://interactive-active-ai.github.io/NextTransformer/do
 - [WeChat group](https://interactive-active-ai.github.io/NextTransformer/docs/community/#wechat)
 
 Contributions are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
+
+### Built on NextTransformer
+
+Projects that build on NextTransformer's code or protocol, maintained by their authors. Their results come from their
+own setups, are not audited by the NextTransformer maintainers, and are not comparable with the leaderboard.
+
+- **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)** by [@Enderfga](https://github.com/Enderfga) —
+  a multimodal track. Frozen SigLIP2 image tokens are interleaved with text at an 8,192-token context, every
+  NextTransformer method runs on them unchanged, and NextTransformer's cost ledger matches training FLOPs per token
+  within 1%. Its first study, pre-registered, asks where hybrid backbones read the 2D layout of an image.
+
+Building on NextTransformer? Share it in [Discussions](https://github.com/Interactive-Active-AI/NextTransformer/discussions)
+to be listed here.
 
 ## Citation
 
