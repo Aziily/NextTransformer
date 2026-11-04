@@ -163,6 +163,20 @@ Any LLM, with or without a research framework, can already enter an architecture
 protocol, ranked on the same leaderboard, and disclosed with how it was found. See the
 [arena](https://interactive-active-ai.github.io/NextTransformer/docs/arena/overview/).
 
+## Built on NextTransformer
+
+Community projects that extend NextTransformer's code or protocol, each maintained by its authors in its own
+repository. Their results come from their own setups, are not audited by the NextTransformer maintainers, and are not
+comparable with the leaderboard.
+
+| Project | Area | What it does | Author | Listed |
+|---|---|---|---|---|
+| **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)**<br><img src="https://img.shields.io/github/stars/Enderfga/NextTransformer-V?style=flat-square&label=stars" alt="GitHub stars"> | <img src="https://img.shields.io/badge/Multimodal-1BAF7A?style=flat-square" alt="Multimodal"> | Trains every NextTransformer method on frozen SigLIP2 image tokens interleaved with text at an 8,192-token context, compute-matched within 1% by NextTransformer's cost ledger. Its first study, pre-registered, asks where hybrid backbones read the 2D layout of an image. | [@Enderfga](https://github.com/Enderfga) | 2026-11 |
+
+**Add your project:** share it in [Show and tell](https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell)
+or open a pull request that adds a row. A listed project is public, builds on NextTransformer's code or protocol, and
+says so in its README.
+
 ## Roadmap
 
 - **By November 14, 2026:** Arena v2 and agent-native research.
@@ -179,19 +193,7 @@ More on the [roadmap](https://interactive-active-ai.github.io/NextTransformer/do
 - [WeChat group](https://interactive-active-ai.github.io/NextTransformer/docs/community/#wechat)
 
 Contributions are welcome; please read [CONTRIBUTING.md](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
-
-### Built on NextTransformer
-
-Projects that build on NextTransformer's code or protocol, maintained by their authors. Their results come from their
-own setups, are not audited by the NextTransformer maintainers, and are not comparable with the leaderboard.
-
-- **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)** by [@Enderfga](https://github.com/Enderfga) —
-  a multimodal track. Frozen SigLIP2 image tokens are interleaved with text at an 8,192-token context, every
-  NextTransformer method runs on them unchanged, and NextTransformer's cost ledger matches training FLOPs per token
-  within 1%. Its first study, pre-registered, asks where hybrid backbones read the 2D layout of an image.
-
-Building on NextTransformer? Share it in [Discussions](https://github.com/Interactive-Active-AI/NextTransformer/discussions)
-to be listed here.
+Community projects are listed under [Built on NextTransformer](#built-on-nexttransformer).
 
 ## Citation
 
