@@ -1,5 +1,5 @@
 {
-  "created_at": "2026-11-03T20:34:09.547341+00:00",
+  "created_at": "2026-11-04T01:13:42.882524+00:00",
   "source_hash": "f5e46218d8e8065f51107b0c4dab3d0a91468be78b6bf5a40f05140144059df7",
   "formula_version": "reference-aten-math-v2",
   "torch": "2.9.1",
@@ -13,7 +13,7 @@
       "core_layers": 9,
       "flops_per_token": 4712240923.495108,
       "relative_error": 0.008527226334762217,
-      "elapsed_seconds": 126.49122566595906
+      "elapsed_seconds": 148.90951933403267
     }
   ]
 }

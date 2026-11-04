@@ -1,6 +1,6 @@
 {
   "method": "cla",
-  "model_hash": "02afc2b0950c3f5679c0f46011b5b19e35c619d57c0da6685e9074748f68651c",
+  "model_hash": "aff0556e48db950660ae3908cdde76a4fb2a525d9d6d151ea63490f94952abae",
   "source_hash": "f5e46218d8e8065f51107b0c4dab3d0a91468be78b6bf5a40f05140144059df7",
   "method_source": {
     "version": "method-source-v1",
@@ -19,7 +19,7 @@
       "nexttransformer/protocol/spec.py",
       "nexttransformer/training/optimizer.py"
     ],
-    "hash": "5eaf9e7f8f76d233f85b29d4233299651221c583647cfab0b6a9ef7abf6e6cda"
+    "hash": "0706465316f245284e33b6972dc9232739fd6734e33149900c1425b9fa6b34d1"
   },
   "protocol_hash": "f8cd1b56fe75a6cf1fcc76aaa9ddd15c0ed054268071b67739a677476fd291dc",
   "formula_version": "reference-aten-math-v2",
@@ -372,7 +372,7 @@
         "unknown": {},
         "diagnostic_scalar_reads": 20,
         "method": "cla",
-        "model_hash": "02afc2b0950c3f5679c0f46011b5b19e35c619d57c0da6685e9074748f68651c",
+        "model_hash": "aff0556e48db950660ae3908cdde76a4fb2a525d9d6d151ea63490f94952abae",
         "sequence_len": 2048,
         "batch": 512,
         "stage": "joint",
@@ -380,7 +380,7 @@
         "parameters": 1406142364,
         "identity": {
           "source": "f5e46218d8e8065f51107b0c4dab3d0a91468be78b6bf5a40f05140144059df7",
-          "model": "02afc2b0950c3f5679c0f46011b5b19e35c619d57c0da6685e9074748f68651c",
+          "model": "aff0556e48db950660ae3908cdde76a4fb2a525d9d6d151ea63490f94952abae",
           "stage": "joint",
           "depth": null,
           "t": 2048,
@@ -390,7 +390,7 @@
           "torch": "2.9.1",
           "fingerprint": "method-source-v1"
         },
-        "audit_seconds": 1.6437150409910828,
+        "audit_seconds": 1.9418276670039631,
         "source_files": [
           "nanochat/optim.py",
           "nexttransformer/methods/cla/__init__.py",
@@ -412,7 +412,7 @@
     "status": "theoretical_preflight_passed",
     "formula_version": "reference-aten-math-v2",
     "source_hash": "f5e46218d8e8065f51107b0c4dab3d0a91468be78b6bf5a40f05140144059df7",
-    "method_source_hash": "5eaf9e7f8f76d233f85b29d4233299651221c583647cfab0b6a9ef7abf6e6cda",
+    "method_source_hash": "0706465316f245284e33b6972dc9232739fd6734e33149900c1425b9fa6b34d1",
     "torch": "2.9.1",
     "dense_flops_per_token": 4672398325.44785,
     "flops_per_token": 4712240923.495108,

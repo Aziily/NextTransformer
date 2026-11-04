@@ -4,8 +4,8 @@ from dataclasses import replace
 import pytest
 import torch
 
-from nexttransformer.methods.cla import CrossLayerCache, sources
-from nexttransformer.models.backbone import has_ve
+from nexttransformer.methods.cla import CrossLayerCache, kv_heads, sources
+from nexttransformer.models.backbone import GPT, GPTConfig, has_ve
 from nexttransformer.models.config import candidate_config, debug_config
 from nexttransformer.models.lm import build_model
 from nexttransformer.protocol.compute import audit_graph
@@ -18,8 +18,8 @@ def reproducible():
     torch.set_num_threads(1)
 
 
-def model_of(layers=6, share=True):
-    config = replace(debug_config("cla"), layers=layers, options={"share_kv": share})
+def model_of(layers=6, share=True, groups=1):
+    config = replace(debug_config("cla"), layers=layers, options={"share_kv": share, "heads_per_kv": groups})
     model = build_model(config)
     with torch.no_grad():
         for block in model.transformer.h:
@@ -39,7 +39,7 @@ def test_pairs_follow_the_value_embedding_layers(layers):
         assert sources(config)[source] == source  # a source layer projects its own keys and values
         if has_ve(layer, layers):
             assert source == layer  # no value embedding is dropped
-    assert sources(replace(config, options={"share_kv": False})) == list(range(layers))
+    assert sources(replace(config, options={"share_kv": False, "heads_per_kv": 1})) == list(range(layers))
 
 
 def test_reusing_layers_hold_their_source_projections_and_every_parameter_trains():
@@ -63,7 +63,7 @@ def test_reusing_layers_hold_their_source_projections_and_every_parameter_trains
 def test_without_sharing_the_plugin_is_the_dense_baseline():
     """share_kv false computes exactly the full-attention Dense baseline, so decoding comparisons are like for like."""
     dense = build_model(replace(debug_config("dense_full"), layers=6))
-    control = build_model(replace(debug_config("cla"), layers=6, options={"share_kv": False}))
+    control = build_model(replace(debug_config("cla"), layers=6, options={"share_kv": False, "heads_per_kv": 1}))
     with torch.no_grad():
         for block in dense.transformer.h:
             block.attn.c_proj.weight.normal_(std=.05)
@@ -85,9 +85,10 @@ def test_sharing_changes_the_function_and_the_control_does_not_share():
 
 
 @pytest.mark.parametrize("share", [True, False])
+@pytest.mark.parametrize("groups", [1, 2])
 @pytest.mark.parametrize("prefill", [1, 5, 12])
-def test_cached_decoding_matches_the_full_forward(share, prefill):
-    model = model_of(share=share).eval()
+def test_cached_decoding_matches_the_full_forward(share, groups, prefill):
+    model = model_of(share=share, groups=groups).eval()
     t = model.config.sequence_len
     x = torch.randint(model.config.vocab_size, (2, t))
     with torch.no_grad():
@@ -101,15 +102,60 @@ def test_cached_decoding_matches_the_full_forward(share, prefill):
         model(x[:, :1], kv_cache=cache)
 
 
-def test_the_cache_keeps_one_slot_per_source_layer():
+def test_the_cache_keeps_one_slot_per_source_layer_and_its_key_value_heads():
     shared, control = model_of(share=True), model_of(share=False)
     small, large = CrossLayerCache(shared, 3, 12), CrossLayerCache(control, 3, 12)
     assert small.k.shape == (4, 3, 12, 2, 24) and large.k.shape[0] == 6
     assert small.nbytes * 6 == large.nbytes * 4
+    grouped = CrossLayerCache(model_of(share=True, groups=2), 3, 12)
+    assert grouped.k.shape == (4, 3, 12, 1, 24) and grouped.nbytes * 2 == small.nbytes
+
+
+def test_grouped_heads_without_sharing_are_the_native_gqa_attention():
+    """heads_per_kv groups query heads exactly as the native GPT does with fewer key/value heads."""
+    config = replace(debug_config("cla"), layers=6, options={"share_kv": False, "heads_per_kv": 2})
+    assert kv_heads(config) == 1
+    plugin = build_model(config)
+    native = GPT(GPTConfig(sequence_len=config.sequence_len, vocab_size=config.vocab_size, n_layer=config.layers,
+                           n_head=config.heads, n_kv_head=kv_heads(config), n_embd=config.width, window_pattern="L"))
+    native.init_weights()
+    with torch.no_grad():
+        for block in plugin.transformer.h:
+            block.attn.c_proj.weight.normal_(std=.05)
+            block.mlp.c_proj.weight.normal_(std=.05)
+    native.load_state_dict(plugin.state_dict())
+    assert plugin.transformer.h[1].attn.c_k.weight.shape == (24, 48)
+    assert plugin.value_embeds["1"].weight.shape[1] == 24 and plugin.transformer.h[1].attn.ve_gate.weight.shape[0] == 1
+    x = torch.randint(config.vocab_size, (2, config.sequence_len))
+    torch.testing.assert_close(plugin(x), native(x), rtol=0, atol=0)
+
+
+def test_grouped_cross_layer_attention_trains_every_parameter():
+    model = model_of(share=True, groups=2)
+    assert [attn.source for attn in (block.attn for block in model.transformer.h)] == [0, 1, 1, 3, 3, 5]
+    x = torch.randint(model.config.vocab_size, (2, model.config.sequence_len))
+    model(x, x).backward()
+    for name, p in model.named_parameters():
+        assert p.grad is not None and torch.isfinite(p.grad).all(), name
+    groups = parameter_groups(model)
+    assert sorted(id(p) for group in groups for p in group["params"]) == sorted(id(p) for p in model.parameters())
+
+
+@pytest.mark.parametrize("groups", [0, 5, True])
+def test_the_group_size_must_divide_the_query_heads(groups):
+    with pytest.raises(ValueError, match="heads_per_kv"):
+        replace(candidate_config("cla"), options={"share_kv": True, "heads_per_kv": groups})
+
+
+def test_grouped_heads_cost_less_in_the_ledger():
+    full, grouped = (audit_graph(replace(debug_config("cla"), layers=6, options={"share_kv": True, "heads_per_kv": g}))
+                     for g in (1, 2))
+    assert not grouped["unknown"] and grouped["phases"]["forward"] < full["phases"]["forward"]
+    assert grouped["operators"]["forward/native_attention"]["calls"] == 6
 
 
 def test_the_ledger_charges_every_layer_attention_and_only_owned_projections():
-    shared, control = (audit_graph(replace(debug_config("cla"), layers=6, options={"share_kv": share}))
+    shared, control = (audit_graph(replace(debug_config("cla"), layers=6, options={"share_kv": share, "heads_per_kv": 1}))
                        for share in (True, False))
     assert not shared["unknown"] and not control["unknown"]
     attention = lambda report: report["operators"]["forward/native_attention"]

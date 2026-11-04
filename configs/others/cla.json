@@ -82,15 +82,16 @@
     "backend": "reference",
     "scale": "formal",
     "options": {
+      "heads_per_kv": 1,
       "share_kv": true
     }
   },
-  "model_hash": "02afc2b0950c3f5679c0f46011b5b19e35c619d57c0da6685e9074748f68651c",
+  "model_hash": "aff0556e48db950660ae3908cdde76a4fb2a525d9d6d151ea63490f94952abae",
   "calibration": {
     "status": "theoretical_preflight_passed",
     "formula_version": "reference-aten-math-v2",
     "source_hash": "f5e46218d8e8065f51107b0c4dab3d0a91468be78b6bf5a40f05140144059df7",
-    "method_source_hash": "5eaf9e7f8f76d233f85b29d4233299651221c583647cfab0b6a9ef7abf6e6cda",
+    "method_source_hash": "0706465316f245284e33b6972dc9232739fd6734e33149900c1425b9fa6b34d1",
     "torch": "2.9.1",
     "dense_flops_per_token": 4672398325.44785,
     "flops_per_token": 4712240923.495108,

@@ -12,13 +12,23 @@ parameter still receives a gradient.
 
 With `share_kv: false` every layer keeps its own keys and values: the full-attention shell on the same code path, the
 control for decoding measurements.
+
+`heads_per_kv` groups query heads onto fewer key/value heads (GQA, Ainslie et al. 2023), as the paper combines CLA with
+MQA and GQA: 1 keeps one key/value head per query head, 4 gives the 12 query heads 3 key/value heads, 12 is MQA. As in
+the native GPT with fewer key/value heads, value embeddings and their gates take the key/value width.
 """
 import torch
+from torch import nn
 
 from nanochat.common import COMPUTE_DTYPE
 from nanochat.flash_attention import flash_attn
-from nexttransformer.models.backbone import CausalSelfAttention, apply_rotary_emb, has_ve, norm
+from nexttransformer.models.backbone import CausalSelfAttention, Linear, apply_rotary_emb, has_ve, norm
 from nexttransformer.models.lm import ReferenceLM
+
+
+def kv_heads(config):
+    """Key/value heads per layer: the query heads divided by the query heads that share one key/value head."""
+    return config.heads // config.option("heads_per_kv")
 
 
 def sources(config):
@@ -36,6 +46,12 @@ class Link:
 class CrossLayerAttention(CausalSelfAttention):
     def __init__(self, config, layer):
         super().__init__(config, layer)
+        if kv_heads(config) != self.n_kv_head:
+            self.n_kv_head = kv_heads(config)
+            self.c_k = Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+            self.c_v = Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+            if self.ve_gate is not None:
+                self.ve_gate = Linear(self.ve_gate_channels, self.n_kv_head, bias=False)
         self.source = sources(config)[layer]
         self.link = None  # set by the model on a source layer and on the layer that reuses it
         self.slot = None  # decoding-cache slot of the source layer
@@ -74,7 +90,7 @@ class CrossLayerCache:
         c = model.config
         if length > model.cos.shape[1]:
             raise ValueError("cache longer than the rotary table")
-        shape = (model.cache_slots, batch, length, c.heads, c.head_dim)
+        shape = (model.cache_slots, batch, length, kv_heads(c), c.head_dim)
         self.k = torch.zeros(shape, device=device, dtype=dtype)
         self.v = torch.zeros(shape, device=device, dtype=dtype)
         self.length, self.position, self.embedding = length, 0, None
@@ -98,6 +114,10 @@ class CrossLayerLM(ReferenceLM):
 
     def __init__(self, config):
         super().__init__(config)
+        width = kv_heads(config) * config.head_dim
+        if width != config.width:
+            self.value_embeds = nn.ModuleDict({name: nn.Embedding(table.num_embeddings, width)
+                                               for name, table in self.value_embeds.items()})
         layers = [block.attn for block in self.transformer.h]
         owners = sorted(set(attn.source for attn in layers))
         self.cache_slots = len(owners)
@@ -142,6 +162,14 @@ class CrossLayerLM(ReferenceLM):
                 backout = x
         cache.position = start + t
         return self._readout(x, backout)
+
+
+def check(config):
+    groups = config.option("heads_per_kv")
+    if not isinstance(groups, int) or isinstance(groups, bool) or groups < 1 or config.heads % groups:
+        raise ValueError(f"heads_per_kv must be a positive divisor of the {config.heads} query heads")
+    if not isinstance(config.option("share_kv"), bool):
+        raise ValueError("share_kv must be true or false")
 
 
 def mixer(config, layer):
