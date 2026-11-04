@@ -154,6 +154,16 @@ accelerate launch --config_file launch/accelerate.yaml \
 
 现在任何 LLM（无论是否借助研究框架）就已经可以提交架构参赛：它在相同的协议下训练、在同一个排行榜上排名，并披露它是如何被发现的。见[竞技场](https://interactive-active-ai.github.io/NextTransformer/docs/zh-cn/arena/overview/)。
 
+## 基于 NextTransformer 的项目
+
+基于 NextTransformer 代码或协议的社区项目，由作者在各自的仓库中维护。它们的结果来自各自的实验设置，未经 NextTransformer 维护者审计，不能与排行榜直接比较。
+
+| 项目 | 方向 | 简介 | 作者 | 收录 |
+|---|---|---|---|---|
+| **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)**<br><img src="https://img.shields.io/github/stars/Enderfga/NextTransformer-V?style=flat-square&label=stars" alt="GitHub stars"> | <img src="https://img.shields.io/badge/Multimodal-1BAF7A?style=flat-square" alt="多模态"> | 冻结的 SigLIP2 图像 token 与文本交错排进 8,192 长度的上下文，NextTransformer 的每种方法都不用改动就能直接训练，训练 FLOPs 由 NextTransformer 的成本账本对齐到 1% 以内。第一项研究经过预注册，探讨混合架构从哪里读取图像的二维布局。 | [@Enderfga](https://github.com/Enderfga) | 2026-11 |
+
+**收录你的项目**：在 [Show and tell](https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell) 分享，或提交 pull request 在表中加一行。收录的项目需公开、基于 NextTransformer 的代码或协议，并在 README 中注明这一点。
+
 ## 路线图
 
 - **2026 年 11 月 14 日前：** Arena v2 和 agent 原生研究。
@@ -169,15 +179,7 @@ accelerate launch --config_file launch/accelerate.yaml \
 - [微信交流群](https://interactive-active-ai.github.io/NextTransformer/docs/zh-cn/community/#wechat)
 - [GitHub Discussions](https://github.com/Interactive-Active-AI/NextTransformer/discussions)：提问与想法
 
-欢迎参与贡献；请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和[行为准则](CODE_OF_CONDUCT.md)。
-
-### 基于 NextTransformer 的项目
-
-基于 NextTransformer 代码或协议的项目，由各自作者维护。它们的结果来自各自的实验设置，未经 NextTransformer 维护者审计，不能与排行榜直接比较。
-
-- **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)**（作者 [@Enderfga](https://github.com/Enderfga)）：多模态版本。冻结的 SigLIP2 图像 token 与文本交错排进 8,192 长度的上下文，NextTransformer 的每种方法都不用改动就能直接训练，每个 token 的训练 FLOPs 由 NextTransformer 的成本账本对齐到 1% 以内。第一项研究经过预注册，探讨混合架构从哪里读取图像的二维布局。
-
-在做基于 NextTransformer 的项目？欢迎在 [Discussions](https://github.com/Interactive-Active-AI/NextTransformer/discussions) 分享，我们会收录到这里。
+欢迎参与贡献；请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和[行为准则](CODE_OF_CONDUCT.md)。社区项目见[基于 NextTransformer 的项目](#基于-nexttransformer-的项目)。
 
 ## 引用
 
