@@ -165,9 +165,7 @@ protocol, ranked on the same leaderboard, and disclosed with how it was found. S
 
 ## Built on NextTransformer
 
-Community projects that extend NextTransformer's code or protocol, each maintained by its authors in its own
-repository. Their results come from their own setups, are not audited by the NextTransformer maintainers, and are not
-comparable with the leaderboard.
+Community projects that extend NextTransformer.
 
 <table>
 <tr>

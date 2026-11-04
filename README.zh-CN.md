@@ -156,7 +156,7 @@ accelerate launch --config_file launch/accelerate.yaml \
 
 ## 基于 NextTransformer 的项目
 
-基于 NextTransformer 代码或协议的社区项目，由作者在各自的仓库中维护。它们的结果来自各自的实验设置，未经 NextTransformer 维护者审计，不能与排行榜直接比较。
+扩展 NextTransformer 的社区项目。
 
 <table>
 <tr>
