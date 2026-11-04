@@ -158,11 +158,21 @@ accelerate launch --config_file launch/accelerate.yaml \
 
 基于 NextTransformer 代码或协议的社区项目，由作者在各自的仓库中维护。它们的结果来自各自的实验设置，未经 NextTransformer 维护者审计，不能与排行榜直接比较。
 
-| 项目 | 方向 | 简介 | 作者 | 收录 |
-|---|---|---|---|---|
-| **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)**<br><img src="https://img.shields.io/github/stars/Enderfga/NextTransformer-V?style=flat-square&label=stars" alt="GitHub stars"> | <img src="https://img.shields.io/badge/Multimodal-1BAF7A?style=flat-square" alt="多模态"> | 冻结的 SigLIP2 图像 token 与文本交错排进 8,192 长度的上下文，NextTransformer 的每种方法都不用改动就能直接训练，训练 FLOPs 由 NextTransformer 的成本账本对齐到 1% 以内。第一项研究经过预注册，探讨混合架构从哪里读取图像的二维布局。 | [@Enderfga](https://github.com/Enderfga) | 2026-11 |
-
-**收录你的项目**：在 [Show and tell](https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell) 分享，或提交 pull request 在表中加一行。收录的项目需公开、基于 NextTransformer 的代码或协议，并在 README 中注明这一点。
+<table>
+<tr>
+<td width="50%" valign="top">
+<a href="https://github.com/Enderfga/NextTransformer-V"><img src="https://raw.githubusercontent.com/Enderfga/NextTransformer-V/8cd729800cea4ab23fdc5c083e8e2c68f2e654f7/docs/assets/banner.webp" alt="NextTransformer-V：NextTransformer 的多模态版本" width="100%"></a>
+<h3><a href="https://github.com/Enderfga/NextTransformer-V">NextTransformer-V</a></h3>
+<p><img src="https://img.shields.io/badge/Multimodal-1BAF7A?style=flat-square" alt="多模态"> 作者 <a href="https://github.com/Enderfga">@Enderfga</a></p>
+<p>冻结的 SigLIP2 图像 token 与文本交错排进 8,192 长度的上下文，NextTransformer 的每种方法都不用改动就能直接训练，训练算力对齐到 1% 以内。第一项研究经过预注册，探讨混合架构从哪里读取图像的二维布局。</p>
+</td>
+<td width="50%" align="center">
+<h3>你的项目</h3>
+<p>做了基于 NextTransformer 代码或协议的项目？欢迎在 <a href="https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell">Show and tell</a> 分享，或提交 pull request 加一张卡片，并附一张宽幅横幅图。</p>
+<sub>收录的项目需公开，并在 README 中注明基于 NextTransformer。</sub>
+</td>
+</tr>
+</table>
 
 ## 路线图
 

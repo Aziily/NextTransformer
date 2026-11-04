@@ -3,6 +3,7 @@ title: 社区
 description: 在哪里交流、如何贡献，以及如何引用 NextTransformer。
 ---
 
+import { Badge, Card, LinkButton } from '@astrojs/starlight/components';
 import WeChatInvite from '../../../components/WeChatInvite.astro';
 
 ## 交流
@@ -32,11 +33,21 @@ import WeChatInvite from '../../../components/WeChatInvite.astro';
 
 基于 NextTransformer 代码或协议的社区项目，由作者在各自的仓库中维护。它们的结果来自各自的实验设置，未经 NextTransformer 维护者审计，不能与[排行榜](../results/leaderboard/)直接比较。
 
-| 项目 | 方向 | 简介 | 作者 | 收录 |
-|---|---|---|---|---|
-| **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)** | 多模态 | 冻结的 SigLIP2 图像 token 与文本交错排进 8,192 长度的上下文，NextTransformer 的每种方法都不用改动就能直接训练，训练 FLOPs 由 NextTransformer 的成本账本对齐到 1% 以内。第一项研究经过预注册，探讨混合架构从哪里读取图像的二维布局。 | [@Enderfga](https://github.com/Enderfga) | 2026-11 |
+<Card title="NextTransformer-V">
+  [![NextTransformer-V：NextTransformer 的多模态版本](https://raw.githubusercontent.com/Enderfga/NextTransformer-V/8cd729800cea4ab23fdc5c083e8e2c68f2e654f7/docs/assets/banner.webp)](https://github.com/Enderfga/NextTransformer-V)
 
-**收录你的项目**：在 [Show and tell](https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell) 分享，或提交 pull request 在表中加一行。收录的项目需公开、基于 NextTransformer 的代码或协议，并在 README 中注明这一点。
+  <Badge text="多模态" /> 作者 [@Enderfga](https://github.com/Enderfga)
+
+  冻结的 SigLIP2 图像 token 与文本交错排进 8,192 长度的上下文，NextTransformer 的每种方法都不用改动就能直接训练，训练算力对齐到 1% 以内。第一项研究经过预注册，探讨混合架构从哪里读取图像的二维布局。
+
+  <LinkButton href="https://github.com/Enderfga/NextTransformer-V" variant="secondary" icon="github" iconPlacement="start">在 GitHub 上查看</LinkButton>
+</Card>
+
+<Card title="你的项目">
+  做了基于 NextTransformer 代码或协议的项目？欢迎在 Show and tell 分享，或提交 pull request 加一张卡片，并附一张宽幅横幅图。收录的项目需公开，并在 README 中注明基于 NextTransformer。
+
+  <LinkButton href="https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell" variant="minimal" icon="right-arrow">分享你的项目</LinkButton>
+</Card>
 
 ## 引用
 
