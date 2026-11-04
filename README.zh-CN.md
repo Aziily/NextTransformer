@@ -32,6 +32,7 @@ AI agent 也可以在完全相同的规则下研究新架构。
 
 ## 新闻
 
+- <img src="https://img.shields.io/badge/COMMUNITY-2A78D6?style=flat-square" alt="Community" height="18"> **2026-11-04** · 社区项目 **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)**（作者 [@Enderfga](https://github.com/Enderfga)）：多模态版本，在同一套算力对齐的约定下，用图文交错的 token 训练 NextTransformer 的每种方法。第一项研究经过预注册，探讨混合架构从哪里得到图像的二维布局。
 - <img src="https://img.shields.io/badge/NEW-E5607E?style=flat-square" alt="New" height="18"> **2026-10-31** · NextTransformer 正式开源：31 个完成的运行、36 张模型卡片、完整的协议、文档和观测站。
 - <img src="https://img.shields.io/badge/SOON-8B5CF6?style=flat-square" alt="Soon" height="18"> **2026-11-14 前** · **Arena v2**：全面支持 agent 自主研究。
 - <img src="https://img.shields.io/badge/SOON-8B5CF6?style=flat-square" alt="Soon" height="18"> **2026 年 11 月** · **400B tokens 和更大模型**的训练配方。
@@ -169,6 +170,14 @@ accelerate launch --config_file launch/accelerate.yaml \
 - [GitHub Discussions](https://github.com/Interactive-Active-AI/NextTransformer/discussions)：提问与想法
 
 欢迎参与贡献；请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 和[行为准则](CODE_OF_CONDUCT.md)。
+
+### 基于 NextTransformer 的项目
+
+基于 NextTransformer 代码或协议的项目，由各自作者维护。它们的结果来自各自的实验设置，未经 NextTransformer 维护者审计，不能与排行榜直接比较。
+
+- **[NextTransformer-V](https://github.com/Enderfga/NextTransformer-V)**（作者 [@Enderfga](https://github.com/Enderfga)）：多模态版本。冻结的 SigLIP2 图像 token 与文本交错排进 8,192 长度的上下文，NextTransformer 的每种方法都不用改动就能直接训练，每个 token 的训练 FLOPs 由 NextTransformer 的成本账本对齐到 1% 以内。第一项研究经过预注册，探讨混合架构从哪里读取图像的二维布局。
+
+在做基于 NextTransformer 的项目？欢迎在 [Discussions](https://github.com/Interactive-Active-AI/NextTransformer/discussions) 分享，我们会收录到这里。
 
 ## 引用
 
