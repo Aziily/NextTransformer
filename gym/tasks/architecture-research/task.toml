@@ -1,0 +1,62 @@
+schema_version = "1.4"
+
+[[artifacts]]
+source = "/workspace/submission.json"
+destination = "submission.json"
+
+[[artifacts]]
+source = "/run/gym-runtime/status.json"
+destination = "agent-runtime.json"
+
+[[artifacts]]
+source = "/export/evidence.json"
+destination = "gym-evidence.json"
+service = "gym"
+
+[task]
+name = "nexttransformer/architecture-research"
+description = "Offline architecture research through the Gym API with separate submission verification"
+
+[metadata]
+cohort = "bounded-integration-fixture"
+performance_scoring = false
+
+[agent]
+timeout_sec = 1800.0
+user = "agent"
+
+[environment]
+docker_image = "${GYM_CLIENT_IMAGE}"
+cpus = 1
+memory_mb = 512
+storage_mb = 1024
+
+[environment.env]
+GYM_CLIENT_IMAGE = "${GYM_CLIENT_IMAGE}"
+GYM_SERVICE_IMAGE = "${GYM_SERVICE_IMAGE}"
+GYM_RESEARCH_FLOPS_LIMIT = "${GYM_RESEARCH_FLOPS_LIMIT}"
+GYM_TRIAL_ID = "${GYM_TRIAL_ID}"
+GYM_STATE_VOLUME = "${GYM_STATE_VOLUME}"
+GYM_VERIFIER_VOLUME = "${GYM_VERIFIER_VOLUME}"
+
+[verifier]
+timeout_sec = 60.0
+environment_mode = "separate"
+
+[[verifier.collect]]
+service = "main"
+command = "python /opt/gym/runtime_snapshot.py"
+user = "root"
+
+[[verifier.collect]]
+service = "gym"
+command = "python -m nexttransformer_gym.harbor_evidence"
+
+[verifier.environment]
+docker_image = "${GYM_VERIFIER_IMAGE}"
+cpus = 1
+memory_mb = 256
+
+[verifier.environment.env]
+GYM_VERIFIER_IMAGE = "${GYM_VERIFIER_IMAGE}"
+GYM_VERIFIER_VOLUME = "${GYM_VERIFIER_VOLUME}"

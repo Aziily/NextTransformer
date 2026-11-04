@@ -1,0 +1,658 @@
+import base64
+import concurrent.futures
+import io
+import json
+import runpy
+from pathlib import Path
+
+import pytest
+
+from nexttransformer_gym.backend import NativeBackend, Scheduler
+from nexttransformer_gym.common import GymError
+from nexttransformer_gym.evidence import snapshot, verify_receipt
+from nexttransformer_gym.final import launch_final_run, get_final_run, reconcile
+from nexttransformer_gym.package import ingest
+from nexttransformer_gym.server import bind
+from nexttransformer_gym.service import Service
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def candidate_bytes(activation="square"):
+    blob = io.BytesIO()
+    runpy.run_path(str(ROOT / "gym/examples/make_candidate.py"))["package"](
+        blob, activation
+    )
+    return blob.getvalue()
+
+
+@pytest.fixture
+def context(tmp_path):
+    profiles = json.loads((ROOT / "gym/examples/profiles.fixture.json").read_text())
+    backend = NativeBackend(profiles, tmp_path, ROOT)
+    service = Service(tmp_path / "gym.sqlite3", backend)
+    credentials = service.create_session(10**12, "test-trial")
+
+    def call(operation, **params):
+        return service.call(credentials["agent_token"], operation, params)
+
+    candidate = call(
+        "submit_candidate",
+        package_base64=base64.b64encode(candidate_bytes()).decode(),
+        idempotency_key="first",
+    )
+    return service, credentials, call, candidate
+
+
+def run_job(context, **params):
+    service, _, call, candidate = context
+    quote = call(
+        "quote_experiment",
+        candidate_id=candidate["id"],
+        profile_id="research-fixture",
+        **params,
+    )
+    job = call("run_experiment", quote_id=quote["id"], idempotency_key=quote["id"])
+    Scheduler(service).work_once()
+    state = call("get_job", job_id=job["id"])
+    if state["state"] != "succeeded":
+        pytest.fail(
+            (service.backend.state_dir / (job["id"] + ".diagnostic.log")).read_text()
+        )
+    return call("get_result", job_id=job["id"])
+
+
+def test_continuation_matches_uninterrupted_training(context):
+    import torch
+
+    first = run_job(context, target_update=1)
+    resumed = run_job(context, target_update=2, checkpoint_id=first["checkpoint_id"])
+    uninterrupted = run_job(context, target_update=2)
+    backend = context[0].backend
+    a = torch.load(
+        backend.checkpoint_path(resumed["checkpoint_id"]), weights_only=False
+    )
+    b = torch.load(
+        backend.checkpoint_path(uninterrupted["checkpoint_id"]), weights_only=False
+    )
+    assert all(torch.equal(a["model"][k], b["model"][k]) for k in a["model"])
+    assert a["data"] == b["data"]
+    assert resumed["dev_bpb"] == uninterrupted["dev_bpb"]
+    assert context[2]("get_budget")["reserved"] == "0"
+
+
+def test_full_submission_verifier_and_separate_final(context):
+    service, credentials, call, candidate = context
+    job = call(
+        "validate_candidate",
+        candidate_id=candidate["id"],
+        profile_id="final-fixture",
+        idempotency_key="checks",
+    )
+    Scheduler(service).work_once()
+    assert call("get_job", job_id=job["id"])["state"] == "succeeded"
+    checks = call("get_result", job_id=job["id"])
+    assert all(checks["checks"].values()) and checks["admitted"]
+    submission = call(
+        "finalize",
+        candidate_id=candidate["id"],
+        profile_id="final-fixture",
+        idempotency_key="final",
+    )
+    assert submission["final_run_state"] == "not_scheduled"
+    verifier = {
+        "session_id": credentials["session_id"],
+        "token": credentials["verifier_token"],
+    }
+    signed = snapshot(service, verifier)
+    receipt = {
+        "session_id": credentials["session_id"],
+        "submission_id": submission["id"],
+        "candidate_hash": candidate["hash"],
+    }
+    assert verify_receipt(receipt, signed, verifier)["valid"]
+    assert not verify_receipt({**receipt, "session_id": "forged"}, signed, verifier)[
+        "valid"
+    ]
+    for op in ("submit_candidate", "run_experiment", "launch_final_run"):
+        with pytest.raises(GymError):
+            service.call(credentials["verifier_token"], op, {})
+    run = launch_final_run(
+        service, credentials["session_id"], submission["id"], 10**12, "dispatch"
+    )
+    assert run == launch_final_run(
+        service, credentials["session_id"], submission["id"], 10**12, "dispatch"
+    )
+    Scheduler(service).work_once()
+    final = get_final_run(service, credentials["session_id"], run["id"])
+    assert final["state"] == "succeeded"
+    assert final["result"]["rank"] is None and final["result"]["core"] is None
+    assert final["result"]["official_compatible"] is False
+    assert (
+        call("get_submission", submission_id=submission["id"])["final_run_state"]
+        == "succeeded"
+    )
+    with pytest.raises(GymError):
+        call(
+            "quote_experiment",
+            candidate_id=candidate["id"],
+            profile_id="research-fixture",
+            target_update=1,
+        )
+
+
+def test_idempotency_and_cross_session(context):
+    service, credentials, call, candidate = context
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        results = list(
+            pool.map(
+                lambda _: call(
+                    "submit_candidate",
+                    package_base64=base64.b64encode(candidate_bytes()).decode(),
+                    idempotency_key="first",
+                ),
+                range(6),
+            )
+        )
+    assert all(r == candidate for r in results)
+    with pytest.raises(GymError, match="different request"):
+        call(
+            "submit_candidate",
+            package_base64=base64.b64encode(candidate_bytes("tanh")).decode(),
+            idempotency_key="first",
+        )
+    other = service.create_session(100, "other")
+    with pytest.raises(GymError):
+        service.call(
+            other["agent_token"], "get_candidate", {"candidate_id": candidate["id"]}
+        )
+    restored = Service(service.store.path, service.backend)
+    assert restored.call(credentials["agent_token"], "get_budget", {}) == call(
+        "get_budget"
+    )
+
+
+def test_atomic_budget_and_charge_replay(context):
+    service, credentials, call, _ = context
+    sid = credentials["session_id"]
+    with service.store.transaction() as db:
+        service.store.reserve(db, sid, "one", 10**12)
+
+    def reserve():
+        try:
+            with service.store.transaction() as db:
+                service.store.reserve(db, sid, "two", 1)
+        except GymError as error:
+            return error.code
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        assert (
+            list(pool.map(lambda _: reserve(), range(4))) == ["insufficient_budget"] * 4
+        )
+    with service.store.transaction() as db:
+        service.store.charge(db, sid, "one", "charge", 5)
+        service.store.charge(db, sid, "one", "charge", 5)
+    assert call("get_budget")["spent"] == "5"
+    assert call("get_budget")["reserved"] == str(10**12 - 5)
+
+
+def test_queued_cancellation_releases_only_unexecuted_work(context):
+    service, _, call, candidate = context
+    quote = call(
+        "quote_experiment",
+        candidate_id=candidate["id"],
+        profile_id="research-fixture",
+        target_update=1,
+    )
+    job = call("run_experiment", quote_id=quote["id"], idempotency_key="run")
+    call("cancel_job", job_id=job["id"], idempotency_key="cancel")
+    assert call("get_budget")["reserved"] == "0"
+    assert call("get_budget")["spent"] == "0"
+    assert not Scheduler(service).work_once()
+
+
+def test_crash_recovery_keeps_reservation(context):
+    service, credentials, call, candidate = context
+    quote = call(
+        "quote_experiment",
+        candidate_id=candidate["id"],
+        profile_id="research-fixture",
+        target_update=1,
+    )
+    job = call("run_experiment", quote_id=quote["id"], idempotency_key="run")
+    with service.store.transaction() as db:
+        job.update(state="running", lease="old-controller")
+        service.store.update(db, credentials["session_id"], "job", job)
+    Scheduler(service).recover()
+    assert call("get_budget")["reserved"] == quote["bound"]
+    reconcile(
+        service, credentials["session_id"], job["id"], worker_confirmed_stopped=True
+    )
+    assert call("get_budget")["spent"] == quote["bound"]
+    assert call("get_budget")["reserved"] == "0"
+
+
+def test_invalid_sources_never_execute():
+    import zipfile
+
+    for name, source in [
+        ("../outside", "x"),
+        ("plugin/research_ffn/__init__.py", 'import os; os.system("false")'),
+        ("plugin/research_ffn/__init__.py", 'FFN_EXPRESSION = __import__("os")'),
+    ]:
+        original = zipfile.ZipFile(io.BytesIO(candidate_bytes()))
+        files = {n: original.read(n) for n in original.namelist()}
+        files[name] = source.encode()
+        blob = io.BytesIO()
+        with zipfile.ZipFile(blob, "w") as out:
+            for n, data in files.items():
+                out.writestr(n, data)
+        with pytest.raises(GymError):
+            ingest(blob.getvalue())
+
+
+def test_evidence_tampering_rejected(context):
+    service, credentials, _, _ = context
+    verifier = {
+        "session_id": credentials["session_id"],
+        "token": credentials["verifier_token"],
+    }
+    signed = snapshot(service, verifier)
+    signed["payload"]["budget"]["spent"] = "-1"
+    with pytest.raises(GymError):
+        verify_receipt({}, signed, verifier)
+
+
+def test_host_port_persisted_and_conflict_explicit(context, tmp_path):
+    service = context[0]
+    first = bind(service, tmp_path / "listener")
+    port = first.server_port
+    conflict = tmp_path / "conflict"
+    conflict.mkdir()
+    (conflict / "listener.json").write_text(json.dumps({"port": port}))
+    with pytest.raises(OSError):
+        bind(service, conflict)
+    first.server_close()
+    first.service_lock.close()
+    second = bind(service, tmp_path / "listener")
+    assert second.server_port == port
+    second.server_close()
+    second.service_lock.close()
+
+
+def test_harbor_native_schema():
+    from harbor.models.task.task import Task
+    from harbor.models.task.verifier_mode import resolve_task_verifier_mode
+
+    task = Task(ROOT / "gym/tasks/architecture-research")
+    assert str(resolve_task_verifier_mode(task.config).value) == "separate"
+    assert any(a.service == "gym" for a in task.config.artifacts)
+    assert [h.service for h in task.config.verifier.collect] == ["main", "gym"]
+
+
+def test_reference_lowering_loss_gradients_and_cost_parity():
+    import torch
+    from nexttransformer_gym.numerics import build, inspect, model_config
+    from nexttransformer.models import build_model
+    from nexttransformer.protocol.compute import audit_graph
+
+    candidate = ingest(candidate_bytes())
+    profile = json.loads((ROOT / "gym/examples/profiles.fixture.json").read_text())[
+        "research-fixture"
+    ]
+    adapted = build(candidate, profile)
+    reference = build_model(model_config(candidate, profile), "cpu", seed=42)
+    x = torch.arange(8).reshape(1, 8)
+    a, b = adapted(x, x), reference(x, x)
+    assert torch.equal(a, b)
+    a.backward()
+    b.backward()
+    for (_, p), (_, q) in zip(adapted.named_parameters(), reference.named_parameters()):
+        assert (p.grad is None and q.grad is None) or torch.equal(p.grad, q.grad)
+    report = inspect(candidate, profile)
+    original = audit_graph(model_config(candidate, profile), batch=1)
+    assert (
+        sum(int(report[k]) for k in ("forward", "backward", "optimizer"))
+        == original["total"]
+    )
+
+
+def test_dev_only_stream_and_reference_packing_parity(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import torch
+    from nexttransformer_gym.data import parquet_stream
+    from nexttransformer.runtime.data import BestFitStream
+
+    class Tokenizer:
+        def encode(self, texts, **kwargs):
+            return [[1, *[ord(c) % 31 for c in text]] for text in texts]
+
+        def get_bos_token_id(self):
+            return 1
+
+    pq.write_table(
+        pa.table({"text": ["training text"] * 3000}), tmp_path / "shard_00000.parquet"
+    )
+    pq.write_table(
+        pa.table({"text": ["dev only"] * 1000}), tmp_path / "shard_06541.parquet"
+    )
+    pq.write_table(
+        pa.table({"text": ["never open formal validation"]}),
+        tmp_path / "shard_06542.parquet",
+    )
+    adapted = parquet_stream(
+        [tmp_path / "shard_00000.parquet"], Tokenizer(), 8, "train"
+    )
+    reference = BestFitStream(tmp_path, Tokenizer(), "train", sequence_len=8)
+    assert all(
+        torch.equal(a, b)
+        for a, b in zip(
+            adapted.batch(3, torch.device("cpu")),
+            reference.batch(3, torch.device("cpu")),
+        )
+    )
+    with pytest.raises(GymError):
+        parquet_stream([tmp_path / "shard_06541.parquet"], Tokenizer(), 8, "train")
+    with pytest.raises(GymError):
+        parquet_stream([tmp_path / "shard_06542.parquet"], Tokenizer(), 8, "dev")
+
+
+def test_unknown_parameters_are_not_silently_accepted(context):
+    with pytest.raises(GymError):
+        context[2]("get_budget", command="anything")
+
+
+def test_mediated_agent_cannot_execute_code(tmp_path):
+    from nexttransformer_gym.agent_loop import dispatch
+
+    for action in (
+        {"action": "shell", "command": "touch marker"},
+        {"action": "python", "code": "1+1"},
+        {"action": "note", "text": "hello", "path": "/outside"},
+    ):
+        with pytest.raises(GymError):
+            dispatch(None, {}, action, tmp_path)
+    assert not (tmp_path / "marker").exists()
+
+
+def test_trial_receipt_never_persists_provider_credentials(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    from types import SimpleNamespace
+
+    runner = runpy.run_path(str(ROOT / "gym/run_trial.py"))
+    monkeypatch.setenv("GYM_MODEL_API_KEY", "test-provider-secret-never-persist")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="sha256:fixture-image\n"
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_trial.py",
+            "--research-flops-limit",
+            "1000",
+            "--jobs-dir",
+            str(tmp_path),
+            "--client-image",
+            "client",
+            "--service-image",
+            "service",
+            "--verifier-image",
+            "verifier",
+        ],
+    )
+    with pytest.raises(SystemExit) as exit_status:
+        runner["main"]()
+    assert exit_status.value.code == 1
+    receipt = next(tmp_path.glob("*.binding.json")).read_text()
+    assert "GYM_MODEL_API_KEY" not in receipt and "test-provider-secret" not in receipt
+
+
+def test_rank_adapter_rendezvous_and_meter_on_cpu(tmp_path):
+    from fractions import Fraction
+    import torch.multiprocessing
+    from nexttransformer_gym.common import file_hash
+    from nexttransformer_gym.official import train_rank
+
+    # A tiny CPU protocol probe tests process/rendezvous/accounting mechanics;
+    # it makes no claim to replace GPU scientific validation.
+    root = tmp_path / "snapshot"
+    files = {
+        "nexttransformer/__init__.py": "",
+        "nexttransformer/models/__init__.py": "",
+        "nexttransformer/models/lm.py": "import torch\ndef build_model():\n    return torch.nn.Linear(2, 1)\n",
+        "nexttransformer/train.py": """import torch
+import torch.distributed as dist
+from nexttransformer.models.lm import build_model
+dist.init_process_group('gloo')
+model = build_model()
+value = model(torch.ones(1, 2)).sum()
+value.backward()
+count = torch.ones(1)
+dist.all_reduce(count)
+assert count.item() == 2
+""",
+        "config.json": json.dumps({"calibration": {"cost_record": "cost.json"}}),
+        "cost.json": "{}",
+        "dense.json": "{}",
+    }
+    for name, source in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    plan = {
+        "candidate_hash": "probe",
+        "snapshot": str(root),
+        "manifest": {name: file_hash(root / name) for name in files},
+        "config": "config.json",
+        "resources": str(tmp_path),
+        "method": "probe",
+        "initialization_flops": 1,
+    }
+    request = {
+        "candidate": {"hash": "probe"},
+        "profile": {"official_plan": plan, "batch_size": 1},
+        "quote": {"bound": "100"},
+    }
+    output = tmp_path / "output"
+    output.mkdir()
+    torch.multiprocessing.spawn(
+        train_rank,
+        args=(2, request, str(output), Fraction(1), Fraction(1)),
+        nprocs=2,
+        join=True,
+    )
+    assert [
+        json.loads((output / f"rank-{rank}.json").read_text())["spent"]
+        for rank in range(2)
+    ] == ["3", "3"]
+
+
+def test_final_meter_refuses_before_dispatch():
+    from nexttransformer_gym.official import FinalMeter
+
+    meter = FinalMeter(100, 3, 10)
+    meter.charge(90)
+    with pytest.raises(GymError):
+        meter.charge(11)
+    assert meter.spent == 90
+
+
+def test_final_meter_keeps_integer_precision_and_requires_registered_world():
+    from fractions import Fraction
+    from types import SimpleNamespace
+    from nexttransformer_gym.official import FinalMeter, official_world
+
+    amount = 2**60 + 1
+    meter = FinalMeter(amount, Fraction(amount, 3), Fraction(amount, 3))
+    meter.before_forward(
+        SimpleNamespace(training=False), [SimpleNamespace(numel=lambda: 3)]
+    )
+    assert meter.spent == amount
+    with pytest.raises(GymError):
+        meter.before_forward(
+            SimpleNamespace(training=False), [SimpleNamespace(numel=lambda: 1)]
+        )
+    for devices in ([], [0], [0] * 8):
+        with pytest.raises(GymError):
+            official_world({"cuda_visible_devices": devices})
+    assert official_world({"cuda_visible_devices": list(range(8))}) == 8
+
+
+def test_known_numerical_failure_is_charged_before_reporting(monkeypatch):
+    from nexttransformer_gym import worker
+
+    events = []
+    monkeypatch.setattr(worker, "emit", events.append)
+    monkeypatch.setattr(
+        worker.sys, "stdin", io.StringIO('{"ack":"update"}\n{"ack":"update"}\n')
+    )
+
+    def failing_work():
+        raise GymError("numerical_failure", "Non-finite gradient")
+
+    with pytest.raises(GymError, match="Non-finite"):
+        worker.operation("update", 123, failing_work)
+    assert [event["kind"] for event in events] == ["intent", "charge"]
+    assert events[-1]["amount"] == "123"
+
+
+def test_running_cancel_stops_at_next_accounted_boundary(context):
+    import time
+
+    service, _, call, candidate = context
+    quote = call(
+        "quote_experiment",
+        candidate_id=candidate["id"],
+        profile_id="research-fixture",
+        target_update=8,
+    )
+    job = call("run_experiment", quote_id=quote["id"], idempotency_key="cancel-running")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        running = pool.submit(Scheduler(service).work_once)
+        deadline = time.monotonic() + 15
+        while call("get_job", job_id=job["id"])["state"] != "running":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        call("cancel_job", job_id=job["id"], idempotency_key="stop")
+        assert running.result(timeout=20)
+    assert call("get_job", job_id=job["id"])["state"] == "cancelled"
+    budget = call("get_budget")
+    assert budget["reserved"] == "0" and int(budget["available"]) >= 0
+
+
+@pytest.mark.parametrize("damage", ["missing", "modified"])
+def test_checkpoint_damage_refused_before_dispatch(context, damage):
+    first = run_job(context, target_update=1)
+    service, _, call, candidate = context
+    quote = call(
+        "quote_experiment",
+        candidate_id=candidate["id"],
+        profile_id="research-fixture",
+        target_update=2,
+        checkpoint_id=first["checkpoint_id"],
+    )
+    job = call("run_experiment", quote_id=quote["id"], idempotency_key="resume-damaged")
+    path = service.backend.checkpoint_path(first["checkpoint_id"])
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"changed")
+    spent = call("get_budget")["spent"]
+    assert Scheduler(service).work_once()
+    state = call("get_job", job_id=job["id"])
+    assert (
+        state["state"] == "failed" and state["error_code"] == "incompatible_checkpoint"
+    )
+    assert call("get_budget")["spent"] == spent
+    assert call("get_budget")["reserved"] == "0"
+
+
+def test_expired_quote_cannot_reserve_budget(context):
+    service, credentials, call, candidate = context
+    quote = call(
+        "quote_experiment",
+        candidate_id=candidate["id"],
+        profile_id="research-fixture",
+        target_update=1,
+    )
+    with service.store.transaction() as db:
+        quote["expires_at"] = 0
+        service.store.update(db, credentials["session_id"], "quote", quote)
+    with pytest.raises(GymError):
+        call("run_experiment", quote_id=quote["id"], idempotency_key="expired")
+    assert call("get_budget")["reserved"] == "0"
+
+
+def test_generated_plugin_is_exact_pointwise_lowering():
+    import ast
+    from nexttransformer_gym.lowering import plugin_source
+
+    candidate = ingest(candidate_bytes())
+    source = plugin_source(candidate["expression"])
+    ast.parse(source)
+    assert "return self.c_proj((F.relu(x)).square())" in source
+    assert source == plugin_source(candidate["expression"])
+
+
+def test_official_plugin_lowering_matches_research_path(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from nexttransformer_gym.lowering import plugin_source
+
+    candidate = ingest(candidate_bytes("tanh"))
+    plugin = tmp_path / "gym_test_ffn"
+    plugin.mkdir()
+    (plugin / "__init__.py").write_text(plugin_source(candidate["expression"]))
+    (plugin / "method.json").write_text(
+        json.dumps(
+            {
+                "name": "gym_test_ffn",
+                "family": "others",
+                "options": {},
+                "shell": {"layers": 2, "mlp_width": 128, "window_pattern": "L"},
+            }
+        )
+    )
+    script = """import json,sys,torch
+from nexttransformer.models.config import ModelConfig
+from nexttransformer.models import build_model
+from nexttransformer_gym.numerics import build
+candidate,profile=json.loads(sys.stdin.read())
+formal_plugin=build_model(ModelConfig(method='gym_test_ffn',width=32,heads=2,vocab_size=64,
+    sequence_len=8,mlp_width=128,layers=2,scale='debug',window_pattern='L'),'cpu',seed=42)
+research=build(candidate,profile)
+x=torch.arange(8).reshape(1,8)
+a,b=formal_plugin(x,x),research(x,x)
+assert torch.equal(a,b), (a,b)
+a.backward(); b.backward()
+for (n,p),(m,q) in zip(formal_plugin.named_parameters(),research.named_parameters()):
+    assert n==m
+    assert (p.grad is None and q.grad is None) or torch.equal(p.grad,q.grad), n
+"""
+    profile = json.loads((ROOT / "gym/examples/profiles.fixture.json").read_text())[
+        "research-fixture"
+    ]
+    env = dict(
+        os.environ,
+        NEXTTRANSFORMER_METHOD_PATHS=str(tmp_path),
+        NANOCHAT_DTYPE="float32",
+        TORCHDYNAMO_DISABLE="1",
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        input=json.dumps([candidate, profile]),
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=60,
+        cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stderr

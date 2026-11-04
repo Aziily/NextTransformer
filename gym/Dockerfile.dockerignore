@@ -1,0 +1,14 @@
+**
+!nexttransformer
+!nexttransformer/**
+!nanochat
+!nanochat/**
+!gym
+!gym/src
+!gym/src/**
+!gym/examples
+!gym/examples/**
+!gym/tasks
+!gym/tasks/**
+**/__pycache__
+**/*.pyc

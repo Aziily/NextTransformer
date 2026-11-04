@@ -1,0 +1,60 @@
+services:
+  main:
+    image: ${GYM_CLIENT_IMAGE:?Prepare a digest-pinned client image}
+    pull_policy: never
+    command: ["sleep", "infinity"]
+    user: agent
+    working_dir: /workspace
+    depends_on:
+      gym:
+        condition: service_healthy
+    networks: [research]
+    volumes:
+      - agent-auth:/run/gym-auth:ro
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 1
+    mem_limit: 512m
+    pids_limit: 128
+
+  gym:
+    image: ${GYM_SERVICE_IMAGE:?Prepare a digest-pinned service image}
+    pull_policy: never
+    init: true
+    environment:
+      GYM_RESEARCH_FLOPS_LIMIT: ${GYM_RESEARCH_FLOPS_LIMIT:?Explicit allocation required}
+      GYM_TRIAL_ID: ${GYM_TRIAL_ID:?Unique trial binding required}
+    networks: [research]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - gym-state:/state
+      - agent-auth:/run/agent-auth
+      - verifier-auth:/run/verifier-auth
+      - gym-export:/export
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 15s
+
+networks:
+  research:
+    internal: true
+
+volumes:
+  agent-auth:
+  gym-export:
+  # State and verifier identity outlive the agent trial. Explicit controller cleanup only.
+  gym-state:
+    external: true
+    name: ${GYM_STATE_VOLUME:?Prepare a per-trial state volume}
+  verifier-auth:
+    external: true
+    name: ${GYM_VERIFIER_VOLUME:?Prepare a per-trial verifier identity volume}
