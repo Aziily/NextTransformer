@@ -144,6 +144,8 @@ what is counted.
 
 ## Add your method
 
+New methods and Arena entries follow the same submission process.
+
 1. [Open a proposal issue](https://github.com/Interactive-Active-AI/NextTransformer/issues/new/choose) to discuss the method and run plan.
 2. Implement the plugin on your fork, calibrate it to the shared budget, and complete a `--formal` run.
 3. Once you have audited and exported the result, open **one pull request** to upstream `main` with the implementation and result. Link the proposal issue.

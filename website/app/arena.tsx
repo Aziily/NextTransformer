@@ -14,8 +14,8 @@ import './arena.css';
 const fixed=(v:number|undefined,n:number,scale=1)=>v===undefined?'—':(v*scale).toFixed(n);
 const signed=(v:number,n:number,scale=1)=>(Math.abs(v*scale)<.5*10**-n?'±':v>0?'+':'−')+Math.abs(v*scale).toFixed(n);
 const SIGNALS:Record<string,string>={'train-loss':'Training loss','dev-bpb':'Dev-split BPB','validation-bpb':'Validation BPB (reserved in v1)',core:'CORE (reserved in v1)',other:'Other'};
-const PRINCIPLES=[['01','One training contract','49.152B tokens, the ±1% compute anchor and the fixed evaluations. Nothing changes for agents.'],['02','Free research, disclosed','Any scale and compute. LLMs, framework, people, candidates and selection signal are recorded.'],['03','Frozen before results','An admission pull request fixes the method before its formal run begins.'],['04','Trusted, verifiable','Entrants train their own runs. Pinned data, one seed and published checkpoints let anyone check.']];
-const STEPS=[['01','Hand over the task','Give the agent task and a checkout to any LLM, with or without a framework.'],['02','Research freely','Anywhere, with any compute, all of it disclosed. Select with training loss or the dev split; validation and CORE stay reserved.'],['03','Admission pull request','Method, configuration within ±1%, tests and a disclosure card. The merge freezes it.'],['04','Formal run','49.152B tokens under the shared protocol, exported with nexttransformer.export_run.'],['05','Result pull request','Run record, audit, checkpoint and logs. The entry joins the leaderboard.']];
+const PRINCIPLES=[['01','One training contract','49.152B tokens, the ±1% compute anchor and the fixed evaluations. Nothing changes for agents.'],['02','Free research, disclosed','Any scale and compute. LLMs, framework, people, candidates and selection signal are recorded.'],['03','Frozen before results','Record the fork commit and calibrated configuration in the proposal issue before the formal run.'],['04','Trusted, verifiable','Entrants train their own runs. Pinned data, one seed and published checkpoints let anyone check.']];
+const STEPS=[['01','Propose the method','Open an issue describing the method and run plan. Give the agent the task and a checkout.'],['02','Research freely','Anywhere, with any compute, all of it disclosed. Select with training loss or the dev split; validation and CORE stay reserved.'],['03','Preregister in the issue','Link the fork commit, calibrated configuration and cost proof before training.'],['04','Formal run','49.152B tokens under the shared protocol, exported with nexttransformer.export_run.'],['05','Result pull request','Submit the method and audited result together, with the disclosure card, checkpoint and logs.']];
 
 export default function Arena({runs,methods,baseline,onModel,onDetails,onCompare,onCommunity}:{runs:Run[];methods:Method[];baseline?:Run;onModel:(method:Method)=>void;onDetails:(run:Run)=>void;onCompare:(run:Run)=>void;onCommunity?:()=>void}){
  const [open,setOpen]=useState<ArenaRow|null>(null);
@@ -43,7 +43,7 @@ export default function Arena({runs,methods,baseline,onModel,onDetails,onCompare
      {entry.statusNote&&<p className="arena-note">{entry.statusNote}</p>}
     </article>;})}
    </div>
-   {!rows.length&&<p className="arena-empty">No entries yet. The first appears when its admission pull request is merged.</p>}
+   {!rows.length&&<p className="arena-empty">No entries yet. The first appears when its formal result is merged.</p>}
    <div className="arena-caption"><span>Scores are measured at update {FINAL_STEP.toLocaleString('en-US')} and ranked with the same rules as the leaderboard. A legacy example predates the arena protocol or does not meet it; it keeps its leaderboard place as an ordinary experiment.</span><span>Single-seed results · disclosures are self-reported unless marked otherwise</span></div>
   </div>
   <div className="arena-lower">

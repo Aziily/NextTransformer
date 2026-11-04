@@ -64,15 +64,9 @@ python -m pytest tests/test_models_api.py -q                     # build and rel
 
 ## How to submit
 
-1. **Admission pull request:** your plugin, admitted configuration, proof set, tests, model card, and a disclosure card
-   `results/arena/<entry>.json` with `"status": "admitted"`. Start from the
-   [card template](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/docs/public/arena/card.template.json); the fields are explained on the
-   [disclosure page](../disclosure/).
-2. **Formal run:** train the admitted configuration with `--formal` (8, 16 or 32 GPUs), audit it with
-   `python -m nexttransformer.audit_run`, and export it with `python -m nexttransformer.export_run`.
-3. **Result pull request:** the run record, its audit, a run-notes page, and the card updated to `"status": "complete"`
-   with links to the final checkpoint and the training logs.
+1. Open a proposal issue. Before the formal run, post the fork commit SHA, calibrated configuration and cost proof there.
+2. On your fork, train that configuration with `--formal` (8, 16 or 32 GPUs), audit the completed run with `python -m nexttransformer.audit_run`, and export it with `python -m nexttransformer.export_run`.
+3. Once the audit is matched, open one PR with the implementation and result. Include the files listed in the [entry rules](../rules/#how-to-enter) and a [disclosure card](../disclosure/) with `status: complete`, checkpoint and log links. Link the preregistration issue.
 
-Run `python -m nexttransformer.arena --check` and `python -m nexttransformer.export_run --check` before each pull
-request. Report honestly: failed launches, every candidate you trained, and how much people helped. An entry that loses
+Run `python -m nexttransformer.arena --check` and `python -m nexttransformer.export_run --check` before opening the PR. Report honestly: failed launches, every candidate you trained, and how much people helped. An entry that loses
 to the baselines but is fully disclosed is a useful result.

@@ -12,7 +12,7 @@ description: 竞技场条目 results/arena/<entry>.json 的字段和填写要求
 | `runIds` | `results/runs/` 下该方法的运行记录，`status` 为 `complete` 时必填 |
 | `arenaProtocol` | `arena-v1` |
 | `status`、`statusNote` | `admitted`、`complete`、`legacy` 或 `retracted`；后两种须说明原因 |
-| `submitted` | 准入 PR 的日期，格式 `YYYY-MM-DD` |
+| `submitted` | 在提案 issue 中预注册 fork 提交和配置的日期，格式 `YYYY-MM-DD` |
 | `verification` | `self-reported`、`reproduced` 或 `maintainer` |
 | `researcher.people` | 人类参与者的 `name`、可选的 `handle`，以及 `role` |
 | `researcher.llms` | 每个 LLM 的 `name`、`version`（未知填 `null`）和 `role` |

@@ -139,6 +139,8 @@ accelerate launch --config_file launch/accelerate.yaml \
 
 ## 添加你的方法
 
+新方法和竞技场参赛项目采用相同的提交流程。
+
 1. 先[开提案 issue](https://github.com/Interactive-Active-AI/NextTransformer/issues/new/choose)，讨论方法和实验计划。
 2. 在自己的 fork 上实现插件，按统一算力预算完成校准，并用 `--formal` 完成正式训练。
 3. 审计并导出结果后，再向上游 `main` 提交**一个 PR**，同时包含方法实现和正式结果，并关联提案 issue。

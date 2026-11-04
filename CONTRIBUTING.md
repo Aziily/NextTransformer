@@ -14,7 +14,7 @@ short version.
 2. **Fork the repository** and work on a branch of your fork.
 3. **For a new method**, discuss the run plan in the issue, then calibrate and test the plugin on your fork, complete a `--formal` run, and audit and export its result.
    Only then open one pull request into upstream `main` with the implementation and result together. Link the proposal issue.
-4. Run the local checks below before submitting. Arena entries follow the separate preregistration rules linked below.
+4. Run the local checks below before submitting. For Arena entries, preregister the fork commit and calibrated configuration in the proposal issue before the formal run.
 
 By contributing you agree that your contribution is licensed under the [MIT License](LICENSE).
 
@@ -26,7 +26,7 @@ By contributing you agree that your contribution is licensed under the [MIT Lice
 | A new method | A plugin `nexttransformer/methods/<method>/`, a calibrated `configs/<family>/<method>.json` and its cost proof under `evidence/costs/`, tests, a model card `results/methods/<method>.json`, a source-notes entry, and the formal run artifacts from the row above | [Method plugins](https://interactive-active-ai.github.io/NextTransformer/docs/guides/plugins/) |
 | Documentation or the website | Pages under `docs/`, code under `website/` | [Documentation README](docs/README.md), [website README](website/README.md) |
 | A change to shared code | Agreed in an issue first; see the guide for the audit it needs | [Changing shared code](https://interactive-active-ai.github.io/NextTransformer/docs/guides/changing-shared-code/) |
-| An arena entry | An admission pull request before the formal run, then a result pull request, each with a disclosure card | [Arena rules](https://interactive-active-ai.github.io/NextTransformer/docs/arena/rules/) |
+| An arena entry | The method and audited formal result in one PR linked to the preregistration issue, plus the completed disclosure card with checkpoint and training log links | [Arena rules](https://interactive-active-ai.github.io/NextTransformer/docs/arena/rules/) |
 
 ## Local checks
 

@@ -22,8 +22,7 @@ November 14, 2026.** The rules below (Arena Protocol v1) already apply to entrie
   before it trains anything.
 - **Research mode.** `python -m nexttransformer.train` trains any candidate in research mode on the formal data stream;
   select with training loss or the dev split.
-- **Two pull requests.** An admission pull request freezes the method before its formal run; a result pull request
-  publishes it. See the [rules](../rules/).
+- **Proposal issue, then one pull request.** Propose the method in an issue and pin the fork commit and calibrated configuration there before the formal run. Submit the method and audited result together once the run is complete. See the [rules](../rules/).
 - **Disclosure.** Every entry records its LLMs, framework, human involvement (L0–L3), research cost and selection
   signal in a [disclosure card](../disclosure/).
 

@@ -3,7 +3,7 @@
 One card per arena entry: `results/arena/<entry>.json`. The rules are in the [arena rules](https://interactive-active-ai.github.io/NextTransformer/docs/arena/rules/); the
 observatory's arena view and the leaderboard's provenance badges are built from these files.
 This page owns the stored fields. Follow [CONTRIBUTING.md](../../CONTRIBUTING.md) and the
-[arena admission and result flow](https://interactive-active-ai.github.io/NextTransformer/docs/arena/rules/#entering-two-pull-requests) for submission steps.
+[Arena submission guide](https://interactive-active-ai.github.io/NextTransformer/docs/arena/rules/#how-to-enter) for submission steps.
 `python -m nexttransformer.arena --check` validates every card; CI runs it. Start from
 [the template](../../docs/public/arena/card.template.json).
 
@@ -14,7 +14,7 @@ This page owns the stored fields. Follow [CONTRIBUTING.md](../../CONTRIBUTING.md
 | `runIds` | Run records in `results/runs/` for this method; required once `status` is `complete` |
 | `arenaProtocol` | `arena-v1` |
 | `status`, `statusNote` | `admitted`, `complete`, `legacy`, or `retracted`; `legacy` and `retracted` need a note |
-| `submitted` | Date of the admission pull request, `YYYY-MM-DD` |
+| `submitted` | Date the fork commit and configuration were preregistered in the proposal issue, `YYYY-MM-DD` |
 | `verification` | `self-reported`, `reproduced`, or `maintainer` |
 | `researcher.people` | People involved: `name`, optional `handle`, and `role` |
 | `researcher.llms` | Each LLM: `name`, `version` (`null` if unknown), and `role` |
