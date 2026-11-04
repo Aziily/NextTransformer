@@ -1,6 +1,9 @@
 """Arena disclosure cards and the scope of arena pull requests (arena rules)."""
 import json
 import shutil
+import subprocess
+
+from nexttransformer import arena
 
 from nexttransformer.arena import check, check_card, classify
 from nexttransformer.export_run import REPO, RESULTS
@@ -87,3 +90,30 @@ def test_scope_allows_a_calibration_refresh_but_not_a_model_change():
     assert classify([("M", path)], lambda _: json.dumps(base))[0][0] == "ok"
     base["model_hash"] = "0"*64
     assert classify([("M", path)], lambda _: json.dumps(base))[0][0] == "blocked"
+
+
+def test_scope_distinguishes_arena_docs_from_entry_changes(tmp_path, monkeypatch):
+    def git(*args):
+        subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.org",
+                        *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("commit", "--allow-empty", "-qm", "Base")
+    git("tag", "base")
+    monkeypatch.setattr(arena, "REPO", tmp_path)
+    paths = ["results/arena/README.md", DOCS + "arena/rules.md"]
+    for name in paths:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("Updated documentation")
+    git("add", ".")
+    git("commit", "-qm", "Document the entry workflow")
+    assert arena.scope("base") is None
+
+    (tmp_path / "results/arena/entry.json").write_text("{}")
+    git("add", ".")
+    git("commit", "-qm", "Add an entry")
+    verdicts = {path: verdict for verdict, _, path, _ in arena.scope("base")}
+    assert verdicts[paths[0]] == "review"
+    assert verdicts[paths[1]] == "blocked"
+    assert verdicts["results/arena/entry.json"] == "ok"
