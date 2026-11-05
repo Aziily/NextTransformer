@@ -5,8 +5,7 @@
 Gym 在宿主机上运行架构实验。Harbor 在独立容器中运行 Claude Code 和提交验证器。
 示例使用合成数据，不用于衡量生产 ClimbMix 或 CORE-22 成绩。
 
-Agent 任务指令：[English](tasks/architecture-research/instruction.md) · [中文](tasks/architecture-research/instruction.zh-CN.md)。
-Harbor 读取 `instruction.md`。中文文件供读者对照阅读。
+Harbor 读取 [Agent 任务指令](tasks/architecture-research/instruction.md)。
 
 ## 安装
 

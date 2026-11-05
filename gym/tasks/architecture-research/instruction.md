@@ -1,6 +1,6 @@
 # Architecture research
 
-Design and compare native NextTransformer model plugins through the Gym API. This task's shipped
+Design and compare native model plugins through the Gym API. This task's shipped
 profile is a bounded synthetic integration fixture, not an official benchmark run.
 
 Your deliverable is a native ModelConfig and its plugin source. Gym owns the training profiles.
@@ -41,7 +41,7 @@ Use `get_budget` and `quote_experiment`: the finite allocation covers all of thi
 session's Gym numerical work, including checks. CORE-22 testing for your candidates
 is unavailable during research. You may use internet research from this container.
 
-Use the existing NextTransformer plugin structure: native `method.json`,
+Use the native plugin structure: `method.json`,
 `__init__.py`, and optional local Python modules. Define native `model`, `mixer`,
 `ffn` or `block` hooks. A `model` hook must subclass `ReferenceLM`. `architecture.json`
 contains native `ModelConfig` fields and declared plugin `options`. Read the
