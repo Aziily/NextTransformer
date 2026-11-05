@@ -437,6 +437,8 @@ def test_trial_receipt_never_persists_provider_credentials(monkeypatch, tmp_path
             "run_trial.py",
             "--agent",
             "oracle",
+            "--gym-backend",
+            "container",
             "--research-flops-limit",
             "1000",
             "--jobs-dir",

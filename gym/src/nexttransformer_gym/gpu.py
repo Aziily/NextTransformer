@@ -8,6 +8,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -86,17 +87,74 @@ def _query(fields, kind="gpu"):
     return list(csv.reader(io.StringIO(result.stdout), skipinitialspace=True))
 
 
+def _process_counts(xml):
+    """Count every live compute/graphics process, without exposing host PIDs."""
+    root = ET.fromstring(xml)
+    require(
+        root.tag == "nvidia_smi_log",
+        "resource_unavailable",
+        "Unknown GPU process observation format.",
+    )
+    result = {}
+    for card in root.findall("gpu"):
+        uuid = card.findtext("uuid", "").strip()
+        require(
+            bool(UUID.fullmatch(uuid)) and uuid not in result,
+            "resource_unavailable",
+            "Missing or duplicate GPU process identity.",
+        )
+        processes = card.find("processes")
+        require(
+            processes is not None and (processes.text or "").strip() in {"", "None"},
+            "resource_unavailable",
+            "GPU process observation unavailable.",
+        )
+        compute, graphics, all_processes = set(), set(), set()
+        for process in processes:
+            require(
+                process.tag == "process_info",
+                "resource_unavailable",
+                "Unknown GPU process record.",
+            )
+            pid = int(process.findtext("pid", ""))
+            kind = process.findtext("type", "").strip()
+            require(
+                pid > 0 and kind in {"C", "G", "C+G"},
+                "resource_unavailable",
+                "Unknown GPU process identity or type.",
+            )
+            all_processes.add(pid)
+            if "C" in kind:
+                compute.add(pid)
+            if "G" in kind:
+                graphics.add(pid)
+        result[uuid] = {
+            "compute_process_count": len(compute),
+            "graphics_process_count": len(graphics),
+            "process_count": len(all_processes),
+        }
+    return result
+
+
 def discover():
     """Unknown utilization or process data makes the entire observation unavailable."""
     try:
         rows = _query(
             "index,uuid,name,memory.total,memory.free,utilization.gpu,pci.bus_id"
         )
-        processes = _query("gpu_uuid,pid", "compute-apps")
-        counts = {}
-        for uuid, pid in processes:
-            int(pid)
-            counts[uuid.strip()] = counts.get(uuid.strip(), 0) + 1
+        process_query = subprocess.run(
+            ["nvidia-smi", "-q", "-x"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+        counts = _process_counts(process_query.stdout)
+        require(
+            set(counts) == {row[1] for row in rows},
+            "resource_unavailable",
+            "GPU inventory and process observations disagree.",
+        )
         cards = []
         for index, uuid, name, total, free, utilization, pci in rows:
             require(
@@ -128,11 +186,18 @@ def discover():
                     "memory_total_bytes": int(total) * 1024**2,
                     "memory_free_bytes": int(free) * 1024**2,
                     "utilization_percent": int(utilization),
-                    "compute_process_count": counts.get(uuid, 0),
+                    **counts[uuid],
                 }
             )
         return {"status": "ok", "gpus": cards}
-    except (OSError, ValueError, AttributeError, subprocess.SubprocessError, GymError):
+    except (
+        OSError,
+        ValueError,
+        AttributeError,
+        ET.ParseError,
+        subprocess.SubprocessError,
+        GymError,
+    ):
         return {
             "status": "unavailable",
             "gpus": [],
@@ -151,7 +216,9 @@ def allocated(config, observation):
 
 def idle(card, config):
     return (
-        card["compute_process_count"] == 0
+        card.get("process_count") == 0
+        and card.get("compute_process_count") == 0
+        and card.get("graphics_process_count") == 0
         and card["utilization_percent"] == 0
         and card["memory_free_bytes"]
         >= config["gpu_memory_limit_bytes"] + 256 * 1024**2

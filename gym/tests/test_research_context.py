@@ -142,16 +142,25 @@ def test_launcher_freezes_gpu_uuid_and_mounts_policy_only_in_gym(monkeypatch, tm
         "discover",
         lambda: {"status": "ok", "gpus": [{"index": 3, "uuid": gpu_uuid}]},
     )
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout='{"nvidia": {}}'),
-    )
+    probes = []
+
+    def probe(command, **kwargs):
+        probes.append(command)
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps({"cuda": "12.8", "gpu_ids": [gpu_uuid]})
+        )
+
+    monkeypatch.setattr(subprocess, "run", probe)
     args = SimpleNamespace(
         execution_policy=configuration({"gpu_ids": [3]}), service_image="cuda-service"
     )
     preflight(args)
     assert args.execution_policy["gpu_ids"] == [gpu_uuid]
+    assert len(probes) == 1 and probes[0][:2] == ["docker", "run"]
+    command = probes[0]
+    assert command[command.index("--gpus") + 1] == f'"device={gpu_uuid}"'
+    assert "--runtime" not in command
+    assert "torch.version.cuda" in command[-1] and "torch.cuda" not in command[-1]
 
     task = tmp_path / "task"
     shutil.copytree(ROOT / "gym/tasks/architecture-research", task)
@@ -192,3 +201,38 @@ def test_launcher_rejects_unresolved_or_duplicate_physical_gpus(monkeypatch, cas
     monkeypatch.setitem(resolve.__globals__, "discover", lambda: observation)
     with pytest.raises(SystemExit):
         resolve(configuration({"gpu_ids": selectors}))
+
+
+@pytest.mark.parametrize(
+    "case", ["device_request_failed", "cpu_image", "wrong_gpu", "malformed"]
+)
+def test_launcher_rejects_failed_gpu_device_request_probe(monkeypatch, case):
+    import subprocess
+    from types import SimpleNamespace
+
+    from nexttransformer_gym.gpu import configuration
+
+    runner = runpy.run_path(str(ROOT / "gym/run_trial.py"))
+    preflight = runner["check_gpu_runtime"]
+    gpu_uuid = "GPU-12345678-1234-1234-1234-123456789abc"
+    monkeypatch.setitem(
+        preflight.__globals__,
+        "discover",
+        lambda: {"status": "ok", "gpus": [{"index": 3, "uuid": gpu_uuid}]},
+    )
+    result = {"cuda": None if case == "cpu_image" else "12.8", "gpu_ids": [gpu_uuid]}
+    if case == "wrong_gpu":
+        result["gpu_ids"] = ["GPU-87654321-1234-1234-1234-123456789abc"]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1 if case == "device_request_failed" else 0,
+            stdout="invalid" if case == "malformed" else json.dumps(result),
+        ),
+    )
+    args = SimpleNamespace(
+        execution_policy=configuration({"gpu_ids": [3]}), service_image="cuda-service"
+    )
+    with pytest.raises(SystemExit):
+        preflight(args)

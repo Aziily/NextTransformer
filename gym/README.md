@@ -18,7 +18,7 @@ gym/
   tasks/architecture-research/
     task.toml                   Harbor 0.24.0 / task schema 1.4
     instruction.md
-    environment/                main Agent container + Gym service
+    environment/                Harbor Agent environment template
     tests/                      independent verifier container
     solution/                   bounded two-candidate integration oracle
   examples/                     source package builder and CPU fixture profiles
@@ -47,19 +47,21 @@ PYTHONPATH=gym/src:. NANOCHAT_DTYPE=float32 TORCHDYNAMO_DISABLE=1 \
   uv run --project gym --extra worker python -m pytest -q gym/tests
 ```
 
-Native research workers require bubblewrap on the controller host (the service
-image includes it), with unprivileged user namespaces enabled. The client itself has no training imports. The optional `worker` dependency group
-installs the CPU numerical runtime for these bounded checks. Production GPU images
-need their own pinned, reviewed dependencies and compatibility evidence.
+Gym runs on the host by default. Native research workers require bubblewrap and
+unprivileged user namespaces on that host. The Agent client has no training imports.
+The optional `worker` dependency group installs a CPU numerical runtime; for GPU
+work, select an existing pinned CUDA-enabled interpreter with `--worker-python`.
+No CUDA Docker image is needed for host execution.
 
 ## Native Harbor trial
 
-Build each target from the repository root. Pin `BASE_IMAGE` and `NODE_IMAGE` to reviewed digests
-when preparing a cohort; the run helper resolves all three built images to immutable
-local image IDs and never implicitly pulls them.
+Build the Agent and verifier images from the repository root. Pin `BASE_IMAGE`
+and `NODE_IMAGE` to reviewed digests when preparing a cohort; the helper resolves
+images to immutable local IDs and never implicitly pulls them. The default
+`--gym-backend host` starts Gym on the host and materializes a native Harbor task
+without a Gym service container.
 
 ```sh
-docker build -f gym/Dockerfile --target service -t nt-gym-service:local .
 docker build -f gym/Dockerfile --target client -t nt-gym-client:local .
 docker build -f gym/Dockerfile --target verifier -t nt-gym-verifier:local .
 
@@ -107,16 +109,24 @@ For a simpler test without Claude Code, explicitly pass `--agent oracle` to
 `run_trial.py` with either example configuration. Harbor collects runtime state
 and signed Gym evidence before starting the separate verifier.
 
-The run helper creates uniquely labelled state/verifier volumes and records their
-names alongside Harbor job output. Those volumes intentionally survive task cleanup,
-so frozen submissions and separately dispatched final runs survive the Agent.
-The helper also retains `nexttransformer-gym/<trial>:client`, `:service`, and
-`:verifier` image tags, while execution uses their immutable IDs. Retain these
-images with the trial state. Delete only that trial's volumes and image tags when
-their retention ends.
-No host listener is published by Compose; its private service port is not a host
-port allocation. The optional host HTTP server binds port 0 once, retains the
-socket, persists its chosen port and fails explicitly if that port is occupied.
+The host backend retains its database, candidate sources, checkpoints, credentials,
+execution policy and listener configuration beside the Harbor job output. The Agent
+mounts only its own credential directory and a read-only signed-evidence directory;
+the independent verifier mounts only its own credential. Neither receives host
+training state, repository files or GPU devices. A native Harbor lifecycle hook
+asks the live host Gym to sign evidence before artifact collection and verification.
+The same live service supplies its actual runtime identity for verification.
+
+The host HTTP listener binds port 0 once and keeps the bound socket, persists the
+selected port, and reuses it for that service state. A collision fails explicitly.
+By default it binds the Docker bridge address so Agent containers can reach it via
+`host.docker.internal`. Stop the controller after a trial only after its numerical
+work is stopped; retained state remains available for final dispatch and inspection.
+Retain the pinned host Python environment and source revision alongside that state.
+
+The previous service-container layout remains available explicitly with
+`--gym-backend container` and a prepared `--service-image`. It is not required for
+the host backend and is not the default deployment.
 
 ## Research information and execution resources
 
@@ -137,7 +147,8 @@ for filesystem or Git access to the repository.
 `get_resources` observes the actual local backend: server identity, CPU/memory,
 NVIDIA inventory, configured allocation, currently available cards and the shared
 worker slot. `servers` contains one local node. Each GPU reports its UUID/index,
-name, total/free memory, utilization, allocation, availability and busy reason.
+name, total/free memory, utilization, compute/graphics process counts, allocation,
+availability and busy reason.
 Jobs record the selected server and actual GPU; results include actual parameter
 devices, CUDA/PyTorch versions and peak GPU memory. Discovery failure is reported
 as unavailable, not as invented capacity. The agreed scope is one machine and one
@@ -154,20 +165,28 @@ Gym instances sharing the same host/user lease directory; external host jobs sti
 need operator coordination. Memory limits combine conservative admission bounds
 and the PyTorch allocator cap; they are not a hardware partition.
 
-For a host service, pass `--execution-config <operator.json>` and optionally
-`--worker-python <CUDA-enabled-python>` to `nt-gym` alongside its required state,
-profiles and platform paths. Use the same configuration/interpreter for bootstrap,
-serve and later controller commands. The actual worker runtime is recorded in
+Use `run_trial.py` to provision host HTTP credentials and run the Harbor task.
+For later standalone `nt-gym` controller commands, pass the retained host state,
+profiles and platform paths, plus the same `--execution-config <operator.json>`
+and `--worker-python <CUDA-enabled-python>` used by the trial. The actual worker runtime is recorded in
 revision identities. `--server-id` sets a stable operator node name. The existing
 HTTP listener retains its first OS-assigned port across restarts.
 
-For Harbor, set `runtime.execution_config` in the example TOML or pass
-`--execution-config gym/examples/resources.gpu.json` to `run_trial.py`. The helper
-freezes the policy into the trial artifacts and mounts it only into Gym. GPU
-containers require a CUDA-enabled service image and the NVIDIA Docker runtime;
-preflight checks these before creating trial volumes. The Agent container receives
-no GPU devices. See [VALIDATION.md](VALIDATION.md) for the host GPU smoke and the
-separate container-runtime limitation of this machine.
+For Harbor with host GPU execution, set `runtime.execution_config` in the example
+TOML or pass the configuration and CUDA interpreter explicitly:
+
+```sh
+uv run --project gym python gym/run_trial.py \
+  --config gym/examples/deepseek-v4.1-flash.toml \
+  --execution-config gym/examples/resources.gpu.json \
+  --worker-python /path/to/cuda-environment/bin/python
+```
+
+Replace the example GPU selection with an explicitly allocated idle card and set
+the model/provider environment before running. The helper freezes the operator
+policy in the trial state. Gym runs and observes GPUs directly on the host; the
+Agent remains in its Harbor container and calls the same HTTP/MCP interface.
+GPU-container runtime checks apply only to the optional container backend.
 
 An Agent may choose `target_update` (absolute step), `server_id` and an authorized
 `gpu_id` on `quote_experiment`; omit placement to let Gym select an idle allocated

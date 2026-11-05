@@ -59,10 +59,18 @@ def arguments():
     )
     parser.add_argument("--server-id", default=runtime.get("server_id"))
     parser.add_argument(
+        "--gym-backend",
+        choices=("host", "container"),
+        default=runtime.get("gym_backend", "host"),
+    )
+    parser.add_argument("--host-bind", default=runtime.get("host_bind"))
+    parser.add_argument("--worker-python", default=runtime.get("worker_python"))
+    parser.add_argument("--profiles", type=Path, default=runtime.get("profiles"))
+    parser.add_argument(
         "--execution-config",
         type=Path,
         default=runtime.get("execution_config"),
-        help="Operator-owned GPU execution policy; mounted read-only only in Gym",
+        help="Operator-owned GPU execution policy used only by the Gym controller",
     )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -78,10 +86,13 @@ def arguments():
         parser.error("Agent USD limit must be finite and positive")
     if args.agent == "claude-code" and not args.model:
         parser.error("Set --model or the configured model_env for Claude Code")
-    if any(
-        not getattr(args, role + "_image") for role in ("client", "service", "verifier")
-    ):
-        parser.error("All three prebuilt image names are required")
+    roles = (
+        ("client", "verifier")
+        if args.gym_backend == "host"
+        else ("client", "service", "verifier")
+    )
+    if any(not getattr(args, role + "_image") for role in roles):
+        parser.error("Prebuilt images are required for: " + ", ".join(roles))
     try:
         args.execution_policy = (
             configuration(json.loads(args.execution_config.read_text()))
@@ -171,19 +182,19 @@ def resolve_gpu_policy(policy):
 def check_gpu_runtime(args):
     if not args.execution_policy or not args.execution_policy["gpu_ids"]:
         return
-    runtimes = json.loads(
-        subprocess.run(
-            ["docker", "info", "--format", "{{json .Runtimes}}"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-    )
-    if "nvidia" not in runtimes:
-        raise SystemExit(
-            "GPU trials require the NVIDIA Container Toolkit Docker runtime."
-        )
     args.execution_policy = resolve_gpu_policy(args.execution_policy)
+    identifiers = args.execution_policy["gpu_ids"]
+    # Device requests also work through the NVIDIA hook with the runc runtime.
+    # Inspect CUDA build metadata and NVML visibility without creating a CUDA
+    # context; live occupancy remains the scheduler's responsibility.
+    probe_code = (
+        "import json, subprocess, torch; "
+        "visible = subprocess.check_output("
+        "['nvidia-smi', '--query-gpu=uuid', '--format=csv,noheader'], "
+        "text=True, timeout=10); "
+        "print(json.dumps({'cuda': torch.version.cuda, "
+        "'gpu_ids': [line.strip() for line in visible.splitlines() if line.strip()]}))"
+    )
     probe = subprocess.run(
         [
             "docker",
@@ -191,19 +202,36 @@ def check_gpu_runtime(args):
             "--rm",
             "--pull=never",
             "--network=none",
+            "--gpus",
+            '"device=' + ",".join(identifiers) + '"',
             "--entrypoint",
             "python",
             args.service_image,
             "-c",
-            "import torch; assert torch.version.cuda, 'CUDA-enabled PyTorch is required'",
+            probe_code,
         ],
         capture_output=True,
         text=True,
     )
     if probe.returncode:
         raise SystemExit(
-            "GPU trials require a prepared service image with CUDA-enabled PyTorch."
+            "GPU container device-request probe failed; check NVIDIA device support, "
+            "nvidia-smi and the prepared service image."
         )
+    try:
+        observation = json.loads(probe.stdout)
+        if not observation["cuda"]:
+            raise SystemExit(
+                "GPU trials require CUDA-enabled PyTorch in the service image."
+            )
+        if sorted(observation["gpu_ids"]) != sorted(identifiers):
+            raise SystemExit(
+                "GPU container visibility does not match the authorized UUIDs."
+            )
+    except (ValueError, KeyError, TypeError):
+        raise SystemExit(
+            "GPU container device-request probe returned invalid metadata."
+        ) from None
 
 
 def main():
@@ -216,6 +244,8 @@ def main():
                     "research_flops_limit": str(args.research_flops_limit),
                     "timeout_sec": args.timeout_sec,
                     "execution_backend": "local_subprocess",
+                    "gym_backend": args.gym_backend,
+                    "worker_python": args.worker_python,
                     "execution_config": (
                         str(args.execution_config) if args.execution_config else None
                     ),
@@ -226,6 +256,12 @@ def main():
             )
         )
         return
+    if args.gym_backend == "host":
+        from nexttransformer_gym.host_trial import run
+
+        if args.execution_policy and args.execution_policy["gpu_ids"]:
+            args.execution_policy = resolve_gpu_policy(args.execution_policy)
+        return run(args, image_id)
     check_gpu_runtime(args)
     task = Path(__file__).resolve().parent / "tasks/architecture-research"
     trial = "ntgym-" + uuid.uuid4().hex

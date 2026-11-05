@@ -11,12 +11,13 @@ max_budget_usd = "5.00"
 research_flops_limit = "1000000000000"
 
 [runtime]
-# Optional: operator-owned GPU allocation; requires a CUDA service image + NVIDIA Docker runtime.
+gym_backend = "host"
+# Optional: operator-owned GPU allocation and an existing host CUDA interpreter.
 # execution_config = "gym/examples/resources.gpu.json"
+# worker_python = "/path/to/cuda-environment/bin/python"
 jobs_dir = ".agent-work/harbor-gym"
 timeout_sec = 1800
 
 [images]
 client = "nt-gym-client:local"
-service = "nt-gym-service:local"
 verifier = "nt-gym-verifier:local"

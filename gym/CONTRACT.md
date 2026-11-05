@@ -131,16 +131,27 @@ fixture; it is never presented as ClimbMix or as a formal comparison.
 
 ## Harbor and agent runtime
 
-Harbor owns `main`, the Gym sidecar, execution, collect hooks and teardown. The
-agent image contains only the SDK, package example and observation helper. No
-platform source, dataset, checkpoint root, verifier secret or Docker socket is
-mounted there. The Gym has private durable state. Agent and verifier identities
-use different volumes. The verifier runs in its own network-disabled container.
+Gym runs on the host by default. Harbor owns the Agent and independent verifier
+containers, native Agent execution, artifact collection and teardown. The client
+image contains the HTTP SDK, thin MCP adapter, package example and runtime helper.
+No platform source, dataset, checkpoint root, GPU device, verifier secret or Docker
+socket is mounted into the Agent. Host training state and role credentials remain
+in separate directories; each container mounts only its own credential read-only.
+The verifier runs in a network-disabled container.
+
+The host HTTP listener binds an OS-assigned port once on the Docker bridge address,
+retains the bound socket and persists the port in its service state. It reuses that
+port on restart and fails on conflicts. The Agent uses the same credential file,
+HTTP endpoint contract and MCP tools as before. The controller starts the local
+scheduler, then uses Harbor's native lifecycle hooks to stop/settle numerical work
+and sign evidence from the live Gym before verification. Only signed public evidence
+is mounted read-only into the Agent for Harbor artifact collection. The signing
+credential and training state are never exposed there. Host state outlives the trial.
 
 The launcher defaults to Harbor's built-in `claude-code`, with native model,
 version, turn and USD options. There is no Gym Agent subclass or model broker.
-The Agent has shell tools and outbound networking, while the Gym service and
-numerical workers retain their private network boundary. Provider credentials
+The Agent has shell tools and outbound networking. The host Gym exposes only its
+authenticated HTTP API; numerical workers remain network-isolated. Provider credentials
 follow Harbor's native Agent authentication; they are not placed in Gym state or
 trial binding receipts. The Gym ledger meters service numerical work, not Agent
 inference or arbitrary local shell CPU. The oracle is an explicitly selected
@@ -150,7 +161,7 @@ calling an external model provider.
 `get_resources` reports the local execution node, CPU/memory capacity, discovered
 NVIDIA devices, operator-allocated devices and observed availability. Device rows
 include UUID/index, name, free/total memory, utilization and busy reasons. The
-launcher passes its node identity into the sidecar. Agent quotes may choose that
+launcher passes its node identity into the host service. Agent quotes may choose that
 node, an allocated GPU and an absolute target update within the fixed profile.
 The backend launches the fixed trainer locally; it accepts no shell, environment,
 data-path or remote-execution overrides. Only one shared worker slot is supported;
@@ -166,9 +177,10 @@ and the PyTorch allocator fraction, not a hardware memory partition or a guarant
 against arbitrary direct CUDA allocations. Results record measured parameter
 devices, runtime versions and peak memory. The agreed execution scope is one
 local machine and one concurrent numerical job. Remote nodes and parallel
-workers are outside scope. A CUDA service image and NVIDIA Docker runtime are required for
-GPU execution inside the Harbor sidecar; a host CUDA smoke does not establish that
-deployment's compatibility.
+workers are outside scope. Host GPU execution uses an operator-selected CUDA
+Python environment directly and requires no CUDA container image. The previous
+container backend is optional; its preflight probes actual Docker GPU device
+requests and visible UUIDs rather than requiring a particular runtime name.
 
 `HarborRuntime(environment).snapshot()` uses Harbor's real environment `exec`
 API to read the main container's `/proc` state. Optional Agent-reported state is
@@ -187,8 +199,9 @@ The receipt contains `session_id`, `submission_id` and `candidate_hash`. Gym kee
 the complete native source package and configuration in durable service state.
 Final dispatch resolves that submission and retains its code under the final run's
 own account, so training needs neither an exported archive nor a live Agent
-workspace. Preserve the trial's state volume and pinned runtime images until final
-training and retention finish.
+workspace. Preserve the trial's host state, pinned numerical environment and source
+revision until final training and retention finish. The optional container backend
+instead requires its retained state volume and runtime images.
 
 `prepare-final` creates a separate Git snapshot, copies the original native plugin
 without modification, re-audits the selected configuration without searching for a

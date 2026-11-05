@@ -25,6 +25,8 @@ def card(identity, index, processes=0):
         "memory_free_bytes": 12 * 1024**3,
         "utilization_percent": 0,
         "compute_process_count": processes,
+        "graphics_process_count": 0,
+        "process_count": processes,
     }
 
 
@@ -73,7 +75,7 @@ def test_gpu_lease_rechecks_occupancy_and_releases_after_exception(observed):
             raise RuntimeError("worker failed")
     with gpu.reserve(settings, GPU_A) as lease:
         assert lease["id"] == GPU_A
-    observed[0]["compute_process_count"] = 1
+    observed[0].update(compute_process_count=1, process_count=1)
     with pytest.raises(GymError):
         with gpu.reserve(settings, GPU_A):
             pytest.fail("A host process on the GPU must block dispatch")
@@ -118,7 +120,7 @@ def test_discovery_counts_are_distinct_from_allocated_and_available(observed, tm
     assert resources["discovered_gpu_count"] == 2
     assert resources["allocated_gpu_count"] == 1
     assert resources["available_gpu_count"] == 0
-    observed[1]["compute_process_count"] = 0
+    observed[1].update(compute_process_count=0, process_count=0)
     assert backend.resources(False)["available_gpu_count"] == 1
     with gpu.reserve(config([GPU_B]), GPU_B):
         leased = backend.resources(False)
@@ -159,7 +161,7 @@ def test_busy_gpu_keeps_job_queued_and_budget_reserved_until_cancel(observed, tm
     service.backend.profiles["research-fixture"].update(
         device="cuda:0", cuda_visible_devices=[GPU_A]
     )
-    observed[0]["compute_process_count"] = 1
+    observed[0].update(compute_process_count=1, process_count=1)
     quote = call(
         "quote_experiment",
         candidate_id=candidate["id"],
@@ -179,3 +181,58 @@ def test_busy_gpu_keeps_job_queued_and_budget_reserved_until_cancel(observed, tm
     after = call("get_budget")
     assert after["spent"] == "0" and after["reserved"] == "0"
     assert after["available"] == after["limit"]
+
+
+def test_graphics_process_blocks_idle_and_reservation(observed):
+    observed[0].update(
+        compute_process_count=0,
+        graphics_process_count=1,
+        process_count=1,
+        utilization_percent=0,
+    )
+    assert not gpu.idle(observed[0], config())
+    with pytest.raises(GymError):
+        with gpu.reserve(config(), GPU_A):
+            pytest.fail("Graphics jobs must block allocation even at zero utilization")
+
+
+def test_xml_process_counts_include_compute_graphics_and_mixed():
+    xml = f"""<nvidia_smi_log><gpu><uuid>{GPU_A}</uuid><processes>
+    <process_info><pid>11</pid><type>C</type></process_info>
+    <process_info><pid>12</pid><type>G</type></process_info>
+    <process_info><pid>13</pid><type>C+G</type></process_info>
+    </processes></gpu><gpu><uuid>{GPU_B}</uuid><processes /></gpu></nvidia_smi_log>"""
+    assert gpu._process_counts(xml) == {
+        GPU_A: {
+            "compute_process_count": 2,
+            "graphics_process_count": 2,
+            "process_count": 3,
+        },
+        GPU_B: {
+            "compute_process_count": 0,
+            "graphics_process_count": 0,
+            "process_count": 0,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "processes",
+    [
+        "",
+        "<processes>N/A</processes>",
+        "<processes><process_info><pid>11</pid><type>N/A</type></process_info></processes>",
+        "<processes><process_info><pid>0</pid><type>G</type></process_info></processes>",
+    ],
+)
+def test_xml_missing_or_unknown_process_information_fails_closed(processes):
+    with pytest.raises(GymError):
+        gpu._process_counts(
+            f"<nvidia_smi_log><gpu><uuid>{GPU_A}</uuid>{processes}</gpu></nvidia_smi_log>"
+        )
+
+
+def test_missing_total_process_observation_is_not_idle():
+    observed = card(GPU_A, 0)
+    observed.pop("process_count")
+    assert not gpu.idle(observed, config())

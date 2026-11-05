@@ -5,6 +5,37 @@ PyTorch 2.9.1+cpu. Local tests used Python 3.12.15; container trials used
 Python 3.12.13. Native research workers use unprivileged user/mount/PID/network
 namespaces with no controller procfs mount. Runtime revisions bind the actual dependency and Python versions.
 
+## Host Gym deployment follow-up
+
+Gym now runs on the host by default. Harbor still runs its native Agent and the
+independent verifier in separate containers. The host binds and persists an
+OS-assigned port; the Agent mounts only its credential and signed public evidence,
+and the verifier mounts only its own credential. No CUDA service image is needed.
+Native Harbor lifecycle hooks stop and settle research work, then sign evidence
+using the actual live host service and its runtime identity.
+
+An initial CPU Oracle run exposed a host entrypoint import-path problem before
+training; the host launcher now includes the trusted repository root explicitly.
+The corrected Oracle trial completed four numerical jobs with no exception and
+verifier reward **1**. A second trial used actual native Claude Code 2.1.312 with
+the local deterministic model stub: the real MCP resource call and SDK research
+workflow both passed, with four local stub messages, no external model calls and
+verifier reward **1**. It exercised Agent container -> host HTTP -> isolated host
+workers -> signed evidence -> independent verifier.
+
+The first attempt to allocate a card for the requested real Cosmos/GPU combination
+found Java graphics processes on the cards previously used for GPU smoke. GPU
+discovery now counts both compute and graphics processes using NVIDIA XML output,
+and rejects unknown/incomplete process observations. All eight cards were occupied
+at that check. No new real-provider/GPU trial was started on those occupied cards;
+the earlier real-provider CPU and independent GPU results remain separate evidence.
+
+The updated Gym suite passes **68 tests**, covering persistent host ports, scoped
+read-only mounts, native
+Harbor task/MCP configuration, live-service evidence signing, host CUDA interpreter
+selection, and graphics-process occupancy rejection. Repository tests again pass
+**532 tests**, with 131 skipped and the existing tensor conversion warning.
+
 ## Live Cosmos / DeepSeek Flash / Claude Code trial
 
 A real provider trial on 2026-11-05 used Cosmos's advertised `deepseek-flash`
@@ -84,9 +115,11 @@ The native Harbor smoke used a CPU service image and a prepared client image wit
 the cached MCP 1.30.0 dependencies and pinned Claude executable. The ordinary client
 Docker build was stopped after a stalled network wheel download; the prepared
 image passed offline import/version checks and the full trial. No credentials
-were copied into it. This host has no NVIDIA Docker runtime, so GPU sidecar execution
-was **not** tested in Docker. The runner refuses GPU trials without that runtime
-or a CUDA-enabled service image. No multi-node scheduling, paid model call,
+were copied into it. GPU training in a sidecar was **not** tested in that run.
+A later direct `docker --gpus` probe successfully exposed exactly one allocated
+GPU through NVIDIA hooks under `runc`; the old check requiring a named `nvidia`
+runtime was too strict and has been replaced by an actual device-request probe.
+The default deployment now runs Gym and CUDA workers directly on the host. No multi-node scheduling, paid model call,
 production ClimbMix run or full CORE-22 final evaluation was performed.
 
 ## Native Claude Code and research-context follow-up

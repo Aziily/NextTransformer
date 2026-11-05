@@ -23,9 +23,10 @@ results or the existing official protocol.
   A closed container means filesystem/process isolation, not an offline network.
   It needs no repository checkout or Git history. Gym exposes past experiments,
   results, model configurations and read-only architecture reference code.
-- A separate Gym sidecar runs this repository's training and evaluation service.
-  The Agent uses its HTTP SDK or MCP tools projected from that HTTP API; neither
-  imports training code. The sidecar owns
+- Gym runs this repository's training and evaluation service on the host.
+  Harbor contains the Agent and independent verifier; a CUDA Gym container is not
+  required. The Agent uses its HTTP SDK or MCP tools projected from that HTTP API;
+  neither imports training code. The host service owns
   datasets, checkpoints, budgets and final training. Its private state and the
   verifier's credentials are not mounted into the Agent container.
 - Keep numerical workers network-isolated. Record actual Agent container process
@@ -136,13 +137,13 @@ GPU on that machine. Remote dispatch and parallel workers are outside this scope
 
 | Area | Current state | Required change |
 | --- | --- | --- |
-| Harbor task and sidecar | Native task layout, separate service/verifier and runtime collection exist | Retain this structure |
+| Harbor task and host service | Native task layout; Gym runs on the host, Agent/verifier remain separate containers; runtime and signed evidence are collected | Retain single-machine host execution as the default |
 | Agent | Native Harbor Claude Code default; custom broker/loop removed; model/budget examples supplied; real Cosmos `deepseek-flash` fixture trial passed | Validate other providers and production-scale research separately |
 | Research environment | Agent-only internet access; Gym exposes published results, native model configurations and architecture reference code | Preserve provenance and owner-scoped private history; no Git access is required |
-| Execution resources | Local NVIDIA discovery, operator GPU allocation, memory limits, busy queues, cooperative leases and real CUDA workers; one node and one worker slot | Validate the chosen CUDA container/runtime; single-machine execution with one concurrent numerical job is the agreed scope |
+| Execution resources | Local NVIDIA discovery, operator GPU allocation, memory limits, busy queues, cooperative leases and real CUDA workers; one node and one worker slot | Validate the selected host CUDA environment; single-machine execution with one concurrent numerical job is the agreed scope |
 | Data | Parquet adapter uses native last-shard validation (06542) and permits training through 06541; shipped task still uses synthetic CPU fixtures | Supply and validate production ClimbMix/tokenizer manifests |
 | Candidate/API | Native source packages, authoritative HTTP schemas, thin MCP adapter, checks, jobs, continuation and shared budget ledger exist | Keep native interfaces; finish production execution and accounting validation |
-| Final artifact | Candidate source/configuration live in durable Gym state; Harbor collects a `submission.json` receipt; final dispatch resolves retained code | Retain the agreed ID-based delivery and per-trial service state |
+| Final artifact | Candidate source/configuration live in durable Gym state; Harbor collects a `submission.json` receipt; final dispatch resolves retained code | Retain the agreed ID-based delivery and per-trial host service state |
 | Final execution | Separate final dispatch and a native formal adapter exist; full GPU training is unverified | Wire post-acceptance dispatch and validate the new cohort's final training and CORE-22-only scoring |
 
 Acceptance requires a native Claude Code trial with Gym research-history access,
