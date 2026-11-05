@@ -39,7 +39,7 @@ Community feedback will help prioritize pilot ablations and finalize the recipe 
 
 ## Upcoming results and evidence
 
-- **Hybrid results:** GDN + QSA and MoBA + MHA. Their model cards are already in the observatory, marked
+- **Hybrid results:** GDN + QSA. Its model card is already in the observatory, marked
   "Results coming soon". Each result is published through the same [result pull request](../guides/submit-a-result/)
   as any contribution.
 - **Audits:** independent run-directory audits for the looped and sparse runs; pilot and resume acceptance evidence

@@ -39,7 +39,7 @@ model card; "registered" methods have a card and a configuration but no publishe
 | Hybrid | Hybrid DeltaNet + MHA (`deltanet_hybrid`) | [Parallelizing Linear Transformers with the Delta Rule over Sequence Length](https://arxiv.org/abs/2406.06484) | published |
 | Hybrid | Hybrid KDA + MLA-NoPE (`kda_hybrid`) | [Kimi Linear: An Expressive, Efficient Attention Architecture](https://arxiv.org/abs/2510.26692) | published |
 | Hybrid | Hybrid GDN + QSA (`qsa_hybrid`) | [Qwen3.8-Next technical report · §2.1.2 QSA](https://arxiv.org/html/2608.30320v1#S2.SS1.SSS2) | coming soon |
-| Hybrid | Hybrid MoBA + MHA (`moba_hybrid`) | [MoBA: Mixture of Block Attention for Long-Context LLMs](https://arxiv.org/abs/2502.13189) | coming soon |
+| Hybrid | Hybrid MoBA + MHA (`moba_hybrid`) | [MoBA: Mixture of Block Attention for Long-Context LLMs](https://arxiv.org/abs/2502.13189) | published |
 | Others | SSSL (`sssl`) | [nanochat · GPT d24 implementation](https://github.com/karpathy/nanochat/tree/92d63d4e8bb4df75c3b71618f31ddde2378b2bcd) | published |
 | Others | Multi-Query Attention · MQA (`mqa`) | [Fast Transformer Decoding: One Write-Head is All You Need](https://arxiv.org/abs/1911.02150) | published |
 | Others | Grouped-Query Attention · GQA (`gqa`) | [GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints](https://arxiv.org/abs/2305.13245) | published |
