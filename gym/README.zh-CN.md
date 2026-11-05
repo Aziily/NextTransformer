@@ -5,6 +5,9 @@
 Gym 在宿主机上运行架构实验。Harbor 在独立容器中运行 Claude Code 和提交验证器。
 示例使用合成数据，不用于衡量生产 ClimbMix 或 CORE-22 成绩。
 
+Agent 任务指令：[English](tasks/architecture-research/instruction.md) · [中文](tasks/architecture-research/instruction.zh-CN.md)。
+Harbor 读取 `instruction.md`。中文文件供读者对照阅读。
+
 ## 安装
 
 宿主机需要 Linux、Docker、bubblewrap，以及非特权用户命名空间。Gym 需要 Python 3.12 或 3.13。

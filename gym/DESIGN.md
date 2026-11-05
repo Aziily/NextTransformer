@@ -159,6 +159,7 @@ Reward 1 means valid delivery, not model quality, and neither finalization nor v
 
 Trusted preparation creates a separate Git snapshot and preserves the native plugin. It audits admission without changing the source repository or starting training.
 Trusted final dispatch requires a verified submission and a separate finite allocation, then starts from fresh initialization.
+Dispatch rejects changes to the admitted final profile after submission.
 It never reuses research checkpoints.
 
 The native formal adapter uses 8, 16 or 32 allocated GPUs on one node, file rendezvous and exact rational charge rates.

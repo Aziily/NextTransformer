@@ -26,6 +26,12 @@ def launch_final_run(service, session_id, submission_id, allocation, idempotency
             "stale_quote",
             "Runtime changed after verification.",
         )
+        profile = service.profile(submission["profile_id"])
+        require(
+            identity(profile) == submission["profile_hash"],
+            "stale_quote",
+            "Final profile changed after submission. Restore the admitted profile.",
+        )
         request_hash = identity([submission_id, allocation, idempotency_key])
         previous = s.all(db, session_id, "final_run")
         if previous:
@@ -35,7 +41,6 @@ def launch_final_run(service, session_id, submission_id, allocation, idempotency
                 "Final choice already has a separately allocated run.",
             )
             return previous[0]
-        profile = service.profile(submission["profile_id"])
         require(
             profile.get("official_compatibility_verified")
             or profile["data"]["kind"] == "synthetic_fixture",

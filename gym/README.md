@@ -5,6 +5,9 @@
 Gym runs architecture experiments on the host. Harbor runs Claude Code and the submission verifier in separate containers.
 The examples use synthetic data. They do not measure production ClimbMix or CORE-22 performance.
 
+Agent task instructions: [English](tasks/architecture-research/instruction.md) · [中文](tasks/architecture-research/instruction.zh-CN.md).
+Harbor reads `instruction.md`. The Chinese file is a translation for readers.
+
 ## Install
 
 Use Linux with Docker, bubblewrap and unprivileged user namespaces. The Gym package requires Python 3.12 or 3.13.

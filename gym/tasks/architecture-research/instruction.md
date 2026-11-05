@@ -3,6 +3,9 @@
 Design and compare native NextTransformer model plugins through the Gym API. This task's shipped
 profile is a bounded synthetic integration fixture, not an official benchmark run.
 
+Your deliverable is a native ModelConfig and its plugin source. Gym owns the training profiles.
+Do not submit machine settings or training commands.
+
 Read `/run/gym-auth/credential.json` for your session-scoped endpoint and token.
 Use the preconfigured `gym` MCP tools or import `GymClient` from
 `nexttransformer_gym`. Both use the same HTTP API and session budget.
@@ -58,7 +61,10 @@ Do not install or execute candidate code in the Agent workspace.
 5. Resume only from checkpoints returned by this service.
 6. Record your hypothesis.
 7. Select one candidate.
-8. Call `validate_candidate` with `profile_id="final-fixture"` before `finalize`.
+8. Select the final profile provided by Gym.
+9. Call `validate_candidate` with that `profile_id` before `finalize`.
+
+Wait for validation to finish. Check that all checks pass and `admitted` is true.
 
 Write `/workspace/submission.json` containing exactly your `session_id`, the
 server-returned `submission_id`, and `candidate_hash`. The separate verifier checks

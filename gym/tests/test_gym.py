@@ -10,7 +10,7 @@ import pytest
 from nexttransformer_gym.backend import NativeBackend, Scheduler
 from nexttransformer_gym.common import GymError
 from nexttransformer_gym.evidence import snapshot, verify_receipt
-from nexttransformer_gym.final import launch_final_run, get_final_run, reconcile
+from nexttransformer_gym.final import launch_final_run, reconcile
 from nexttransformer_gym.package import ingest
 from nexttransformer_gym.server import bind
 from nexttransformer_gym.service import Service
@@ -81,7 +81,7 @@ def test_continuation_matches_uninterrupted_training(context):
     assert context[2]("get_budget")["reserved"] == "0"
 
 
-def test_full_submission_verifier_and_separate_final(context):
+def test_full_submission_verifier_and_separate_final(context, monkeypatch, capsys):
     service, credentials, call, candidate = context
     job = call(
         "validate_candidate",
@@ -100,6 +100,10 @@ def test_full_submission_verifier_and_separate_final(context):
         idempotency_key="final",
     )
     assert submission["final_run_state"] == "not_scheduled"
+    with pytest.raises(GymError, match="Verify the frozen deliverable first"):
+        launch_final_run(
+            service, credentials["session_id"], submission["id"], 10**12, "dispatch"
+        )
     verifier = {
         "session_id": credentials["session_id"],
         "token": credentials["verifier_token"],
@@ -114,6 +118,16 @@ def test_full_submission_verifier_and_separate_final(context):
     assert not verify_receipt({**receipt, "session_id": "forged"}, signed, verifier)[
         "valid"
     ]
+    profile = service.backend.profiles["final-fixture"]
+    original_updates = profile["max_updates"]
+    profile["max_updates"] += 1
+    with pytest.raises(GymError, match="Final profile changed after submission"):
+        launch_final_run(
+            service, credentials["session_id"], submission["id"], 10**12, "dispatch"
+        )
+    with service.store.transaction() as db:
+        assert service.store.all(db, credentials["session_id"], "final_run") == []
+    profile["max_updates"] = original_updates
     for op in ("submit_candidate", "run_experiment", "launch_final_run"):
         with pytest.raises(GymError):
             service.call(credentials["verifier_token"], op, {})
@@ -121,14 +135,45 @@ def test_full_submission_verifier_and_separate_final(context):
     # an Agent workspace or the original in-memory candidate/service objects.
     backend = NativeBackend(service.backend.profiles, service.backend.state_dir, ROOT)
     service = Service(backend.state_dir / "gym.sqlite3", backend)
-    run = launch_final_run(
-        service, receipt["session_id"], receipt["submission_id"], 10**12, "dispatch"
+    import sys
+    from nexttransformer_gym.cli import main
+
+    def controller(*arguments):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "nt-gym",
+                "--state",
+                str(backend.state_dir),
+                "--profiles",
+                str(ROOT / "gym/examples/profiles.fixture.json"),
+                "--platform",
+                str(ROOT),
+                *arguments,
+            ],
+        )
+        main()
+        return json.loads(capsys.readouterr().out)
+
+    run = controller(
+        "launch-final",
+        "--session-id",
+        receipt["session_id"],
+        "--submission-id",
+        receipt["submission_id"],
+        "--allocation",
+        str(10**12),
+        "--idempotency-key",
+        "dispatch",
     )
     assert run == launch_final_run(
         service, credentials["session_id"], submission["id"], 10**12, "dispatch"
     )
-    Scheduler(service).work_once()
-    final = get_final_run(service, credentials["session_id"], run["id"])
+    assert controller("work-once")["dispatched"]
+    final = controller(
+        "get-final", "--session-id", credentials["session_id"], "--run-id", run["id"]
+    )
     assert final["state"] == "succeeded"
     assert final["result"]["rank"] is None and final["result"]["core"] is None
     assert final["result"]["official_compatible"] is False
