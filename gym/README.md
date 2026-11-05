@@ -4,7 +4,7 @@ A repository-local implementation of the [Gym design](../docs/design/gym-design-
 Harbor is a pinned dependency; its source and the existing NextTransformer scientific
 code are unchanged. Read [CONTRACT.md](CONTRACT.md) for the supported source language,
 accounting rules, trust boundaries and production release gates.
-See [VALIDATION.md](VALIDATION.md) for executed checks and their limits.
+See [TESTING.md](TESTING.md) for reproducible checks.
 See [ROADMAP.md](ROADMAP.md) for the revised auto-research target: native Harbor
 Claude Code, research history through Gym and Agent internet access, three dataset splits, and a
 submission ID backed by source/configuration retained in Gym. Its status table

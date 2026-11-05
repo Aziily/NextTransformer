@@ -1,9 +1,7 @@
 # User-requested model example; use your gateway's actual model ID.
 # Claude Code requires an Anthropic Messages-compatible endpoint, not just
 # an OpenAI chat-completions URL. Set ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY
-# in the controller environment. Cosmos model ID `deepseek-flash` passed a live
-# bounded fixture trial; set GYM_RESEARCH_MODEL=deepseek-flash for that gateway.
-# Model IDs and routing remain provider-specific.
+# in the controller environment. Model IDs and routing are provider-specific.
 [agent]
 name = "claude-code"
 model_env = "GYM_RESEARCH_MODEL"
