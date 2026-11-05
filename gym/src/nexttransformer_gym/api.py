@@ -33,7 +33,7 @@ def operation(description, properties=None, required=()):
 
 OPERATION_SCHEMAS = {
     "describe_space": operation(
-        "Read supported profiles, native plugin contract and authoritative HTTP operation schemas."
+        "Read supported profiles, candidate_contract (native model config schema and merge rules), per-profile model_config_constraints and authoritative HTTP operation schemas."
     ),
     "get_resources": operation(
         "Observe nodes, discovered/allocated/available GPUs, memory and worker slots. Configuration is operator-owned.",
@@ -54,7 +54,7 @@ OPERATION_SCHEMAS = {
     ),
     "list_candidates": operation("List this session's candidates.", PAGE),
     "submit_candidate": operation(
-        "Upload a base64-encoded source-only native plugin ZIP. No training scripts, weights or command overrides.",
+        "Upload a base64-encoded source-only native plugin ZIP containing proposal.json, architecture.json (native ModelConfig), plugin/<method>/method.json and __init__.py. Read describe_space.candidate_contract first. Config/source changes create a new immutable candidate. No training scripts, weights or command overrides.",
         {"package_base64": {"type": "string", "minLength": 1}},
         ["package_base64"],
     ),
@@ -115,7 +115,7 @@ OPERATION_SCHEMAS = {
         [*CANDIDATE, "check"],
     ),
     "calibrate_candidate": operation(
-        "Inspect at most 32 native architecture config alternatives under a fixed execution profile.",
+        "Statically inspect at most 32 native ModelConfig alternatives using the candidate's unchanged plugin. Each grid item replaces architecture.json completely, not as a patch; returns derived candidates and costs. Read describe_space.candidate_contract for types and profile constraints. Does not train or measure GPU throughput.",
         {
             **CANDIDATE,
             "grid": {

@@ -37,7 +37,11 @@ the native loader. The same original method name, source files and metadata reac
 both paths; no generated replacement model is used.
 
 `architecture.json` contains native `ModelConfig` fields and the plugin's declared
-`options`. Native validation owns architecture constraints. Execution profiles pin
+`options`. `describe_space.candidate_contract` publishes their JSON types and merge
+rules; each public profile publishes `model_config_constraints`. See
+[CANDIDATE_API.md](CANDIDATE_API.md) for requests and config-only submissions.
+Upload checks native field types without importing candidate code; native worker
+validation owns architecture semantics. Execution profiles pin
 width, heads, context, vocabulary and formal/debug scale; explicit submitted values
 must match. A serialized native config may include the fixed seed and scale unchanged.
 Optimizer settings, data paths and commands are not architecture fields. Formal admission still enforces the unchanged scientific protocol.

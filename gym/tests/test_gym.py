@@ -250,6 +250,37 @@ def rewrite_package(changes):
     return blob.getvalue()
 
 
+@pytest.mark.parametrize(
+    "architecture, field",
+    [
+        ({"layers": True}, "layers"),
+        ({"layers": "4"}, "layers"),
+        ({"layers": 4.5}, "layers"),
+        ({"window_pattern": None}, "window_pattern"),
+        ({"act_epsilon": False}, "act_epsilon"),
+        ({"act_epsilon": float("inf")}, "act_epsilon"),
+        ({"options": {"activation": {"expression": "x"}}}, "options"),
+        ({"options": {"output_scale": float("nan")}}, "options"),
+    ],
+)
+def test_model_config_types_rejected_before_plugin_import(
+    tmp_path, architecture, field
+):
+    marker = tmp_path / "must-not-exist"
+    source = f"from pathlib import Path\nPath({str(marker)!r}).touch()"
+    with pytest.raises(GymError, match=f"ModelConfig.{field}") as error:
+        ingest(
+            rewrite_package(
+                {
+                    "architecture.json": json.dumps(architecture),
+                    "plugin/research_model/__init__.py": source,
+                }
+            )
+        )
+    assert error.value.code == "invalid_artifact"
+    assert not marker.exists()
+
+
 def test_invalid_packages_never_execute(tmp_path):
     for name in (
         "../outside",

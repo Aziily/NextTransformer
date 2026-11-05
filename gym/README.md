@@ -5,6 +5,8 @@ Harbor is a pinned dependency; its source and the existing NextTransformer scien
 code are unchanged. Read [CONTRACT.md](CONTRACT.md) for the supported source language,
 accounting rules, trust boundaries and production release gates.
 See [TESTING.md](TESTING.md) for reproducible checks.
+See [CANDIDATE_API.md](CANDIDATE_API.md) for exact upload and native ModelConfig
+inputs, configuration-only changes, defaults, profile constraints and errors.
 See [ROADMAP.md](ROADMAP.md) for the revised auto-research target: native Harbor
 Claude Code, research history through Gym and Agent internet access, three dataset splits, and a
 submission ID backed by source/configuration retained in Gym. Its status table

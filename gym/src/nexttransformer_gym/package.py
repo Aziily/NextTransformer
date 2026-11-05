@@ -5,8 +5,8 @@ import json
 import re
 import stat
 import zipfile
-from dataclasses import fields
 from .common import GymError, identity, require
+from .candidate_contract import ROUTING_SEED, validate_model_field_types
 
 LIMIT = 1 << 20
 CONTRACT = "reference_plugin_v1"
@@ -15,7 +15,6 @@ CONTRACT = "reference_plugin_v1"
 def validate_metadata(method, declaration, architecture):
     from nexttransformer.models.plugins import FAMILIES, SHELL, _value
     from nexttransformer.models.registry import BUILTIN_METHODS, MIXER_KINDS
-    from nexttransformer.models.config import ModelConfig
 
     require(
         method not in (*BUILTIN_METHODS, *MIXER_KINDS),
@@ -50,19 +49,15 @@ def validate_metadata(method, declaration, architecture):
         "Invalid native shell, debug options or layer multiple.",
     )
     # These are the existing ModelConfig fields, not a second architecture DSL.
-    allowed = {field.name for field in fields(ModelConfig)}
-    require(
-        isinstance(architecture, dict) and set(architecture) <= allowed,
-        "invalid_artifact",
-        "architecture.json accepts native ModelConfig fields; protocol/optimizer/data overrides are not accepted.",
-    )
+    validate_model_field_types(architecture)
+    validate_model_field_types(declaration.get("shell", {}))
     require(
         architecture.get("method", method) == method,
         "incompatible_contract",
         "Config method must match the plugin.",
     )
     require(
-        architecture.get("routing_seed", 1729) == 1729,
+        architecture.get("routing_seed", ROUTING_SEED) == ROUTING_SEED,
         "incompatible_contract",
         "The native routing seed is fixed by the execution protocol.",
     )

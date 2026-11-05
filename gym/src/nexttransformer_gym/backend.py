@@ -234,6 +234,8 @@ print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list
         return node
 
     def public_profiles(self):
+        from .candidate_contract import profile_constraints
+
         for profile in self.profiles.values():
             devices = profile.get("cuda_visible_devices", [])
             public = {
@@ -250,6 +252,7 @@ print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list
                 )
             }
             public.update(
+                model_config_constraints=profile_constraints(profile),
                 accelerator_class=profile.get("accelerator_class", "cpu"),
                 device=profile.get("device", "cpu"),
                 usable_memory_bytes_per_device=profile.get("memory_limit_bytes"),

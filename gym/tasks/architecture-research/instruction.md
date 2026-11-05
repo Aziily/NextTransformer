@@ -10,6 +10,13 @@ Call `describe_space`, `get_resources`,
 and `list_components` before starting. Candidate packages must follow the
 `proposal.json`, `architecture.json`, `plugin/<method>/method.json` and
 `plugin/<method>/__init__.py` contract. Use `/opt/gym/make_candidate.py` as an example.
+Read `describe_space.candidate_contract` for the native ModelConfig JSON schema,
+defaults and merge order, and each profile's `model_config_constraints` for fixed
+values. You may submit new configs and new native plugin source. For config-only
+changes, re-upload unchanged source with a new `architecture.json`, or use
+`calibrate_candidate.grid`: each item replaces the entire architecture object,
+not a patch. Calibration is static cost analysis, not training. Pass target steps
+and GPU placement to `quote_experiment`, never inside the model configuration.
 
 Use `list_experiments(scope="published")` and `read_experiment` to inspect past
 experiments, their results and model configurations. Follow `source_reference_ids`

@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 from .common import require
+from .candidate_contract import MODEL_DEFAULTS, PROFILE_FIELDS
 
 _active = None
 _directory = None
@@ -47,9 +48,7 @@ def model_config(candidate, profile):
 
     declaration = candidate["declaration"]
     values = {
-        "layers": 24,
-        "mlp_width": 6144,
-        "window_pattern": "L",
+        **MODEL_DEFAULTS,
         **declaration.get("shell", {}),
         **candidate["architecture"],
     }
@@ -64,7 +63,7 @@ def model_config(candidate, profile):
         "incompatible_contract",
         "Config scale must match the execution profile.",
     )
-    for field in ("width", "heads", "sequence_len", "vocab_size"):
+    for field in PROFILE_FIELDS:
         require(
             field not in values or values[field] == profile[field],
             "incompatible_contract",

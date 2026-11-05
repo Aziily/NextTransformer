@@ -289,6 +289,8 @@ class Service:
     def dispatch(self, db, sid, op, p):
         s = self.store
         if op == "describe_space":
+            from .candidate_contract import describe_candidate_contract
+
             return {
                 "schema_version": "gym.api.v1",
                 "contract": CONTRACT,
@@ -297,6 +299,7 @@ class Service:
                 "profiles": list(self.backend.public_profiles()),
                 "operations": sorted(READS | MUTATIONS),
                 "operation_schemas": OPERATION_SCHEMAS,
+                "candidate_contract": describe_candidate_contract(),
                 "required_checks": sorted(REQUIRED_CHECKS),
                 "runtime_revision": self.backend.revision,
             }
