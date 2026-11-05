@@ -126,6 +126,12 @@ of all arbitrary Python behavior. Agent inference, web search and local shell CP
 use are outside the Gym training ledger and need separate Harbor time/resource
 limits. Do not describe this ledger as metering every computation by the Agent.
 
+## Execution scope
+
+Use one local machine and one concurrent numerical job. Additional experiments
+queue under the same research budget. The Agent can select an operator-allocated
+GPU on that machine. Remote dispatch and parallel workers are outside this scope.
+
 ## Current implementation and remaining work
 
 | Area | Current state | Required change |
@@ -133,7 +139,7 @@ limits. Do not describe this ledger as metering every computation by the Agent.
 | Harbor task and sidecar | Native task layout, separate service/verifier and runtime collection exist | Retain this structure |
 | Agent | Native Harbor Claude Code default; custom broker/loop removed; model/budget examples supplied | Validate actual provider routing separately from the model-stub smoke |
 | Research environment | Agent-only internet access; Gym exposes published results, native model configurations and architecture reference code | Preserve provenance and owner-scoped private history; no Git access is required |
-| Execution resources | Local NVIDIA discovery, operator GPU allocation, memory limits, busy queues, cooperative leases and real CUDA workers; one node and one worker slot | Validate the chosen CUDA container/runtime; remote dispatch and parallel workers are not implemented |
+| Execution resources | Local NVIDIA discovery, operator GPU allocation, memory limits, busy queues, cooperative leases and real CUDA workers; one node and one worker slot | Validate the chosen CUDA container/runtime; single-machine execution with one concurrent numerical job is the agreed scope |
 | Data | Parquet adapter uses native last-shard validation (06542) and permits training through 06541; shipped task still uses synthetic CPU fixtures | Supply and validate production ClimbMix/tokenizer manifests |
 | Candidate/API | Native source packages, authoritative HTTP schemas, thin MCP adapter, checks, jobs, continuation and shared budget ledger exist | Keep native interfaces; finish production execution and accounting validation |
 | Final artifact | Candidate source/configuration live in durable Gym state; Harbor collects a `submission.json` receipt; final dispatch resolves retained code | Retain the agreed ID-based delivery and per-trial service state |

@@ -164,8 +164,9 @@ or different container lease filesystems. Operators must allocate dedicated card
 across those boundaries. The GPU memory policy uses conservative quote admission
 and the PyTorch allocator fraction, not a hardware memory partition or a guarantee
 against arbitrary direct CUDA allocations. Results record measured parameter
-devices, runtime versions and peak memory. Remote nodes and concurrent workers are
-not implemented. A CUDA service image and NVIDIA Docker runtime are required for
+devices, runtime versions and peak memory. The agreed execution scope is one
+local machine and one concurrent numerical job. Remote nodes and parallel
+workers are outside scope. A CUDA service image and NVIDIA Docker runtime are required for
 GPU execution inside the Harbor sidecar; a host CUDA smoke does not establish that
 deployment's compatibility.
 

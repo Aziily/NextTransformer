@@ -140,7 +140,8 @@ worker slot. `servers` contains one local node. Each GPU reports its UUID/index,
 name, total/free memory, utilization, allocation, availability and busy reason.
 Jobs record the selected server and actual GPU; results include actual parameter
 devices, CUDA/PyTorch versions and peak GPU memory. Discovery failure is reported
-as unavailable, not as invented capacity. Remote dispatch is not implemented.
+as unavailable, not as invented capacity. The agreed scope is one machine and one
+concurrent numerical job; remote dispatch and parallel workers are outside it.
 
 The operator controls allocation with `--execution-config`; the Agent can read it
 but cannot expand it. CPU is the default. Start with `examples/resources.gpu.json`,
@@ -271,6 +272,6 @@ reported as a scientific measurement. Full GPU execution remains a deployment ch
 
 The initial resource pool has one worker slot. Candidate and checkpoint quotas are
 checked before dispatch; checkpoints remain pinned until explicit retention cleanup.
-The code does not yet automate multi-node provisioning or checkpoint garbage
-collection. Production image/hardware, worker isolation and full-run acceptance must
+Multi-node provisioning is outside the agreed scope. Checkpoint garbage
+collection is not yet automated. Production image/hardware, worker isolation and full-run acceptance must
 be validated for the selected deployment; bounded CPU fixtures do not establish them.
