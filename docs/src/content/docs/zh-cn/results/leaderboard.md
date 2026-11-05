@@ -18,6 +18,7 @@ description: 同一参考协议下完成的正式训练，以及各方法与 Den
 | [Native Sparse Attention · NSA](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/nsa.json) | 稀疏 | 0.6678 | +0.0006 | 33.78 | +0.69 | 4.639 |
 | [Hybrid GDN + SWA](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/gdn_hybrid_swa.json) | 混合 | 0.6656 | -0.0015 | 33.66 | +0.57 | 4.647 |
 | [Hybrid GDN + MHA](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/gdn_hybrid.json) | 混合 | 0.6647 | -0.0025 | 33.37 | +0.28 | 4.704 |
+| [Hybrid MoBA + MHA](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/moba_hybrid.json) | 混合 | 0.6702 | +0.0031 | 32.74 | -0.35 | 4.660 |
 | [Grouped-Query Attention · GQA](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/gqa.json) | 其他 | 0.6741 | +0.0069 | 32.62 | -0.47 | 4.687 |
 | [Multi-head Latent Attention · MLA + QK-norm](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/mla_qknorm.json) | 其他 | 0.6759 | +0.0087 | 32.53 | -0.56 | 4.670 |
 | [Fixed Recursive](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/fixed_recursive.json) | 循环 | 0.6784 | +0.0112 | 32.45 | -0.65 | 4.663 |

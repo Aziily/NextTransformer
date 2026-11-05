@@ -2,7 +2,6 @@
  "id": "moba_hybrid",
  "name": "Hybrid MoBA + MHA",
  "family": "hybrid",
- "status": "pending",
  "tagline": "Block-sparse attention, with full attention in the last three layers.",
  "description": "Mixture of Block Attention in the first 22 layers and full causal multi-head attention in the last three. MoBA uses 128-token blocks and a 256-token budget including the current block. Calibration kept exactly three final full-attention layers at 25 layers.",
  "paperTitle": "MoBA: Mixture of Block Attention for Long-Context LLMs",
@@ -12,7 +11,7 @@
   "MoBA: block 128, budget 256 including the current block",
   "FFN 6016; native value embeddings; no burn-in or auxiliary loss"
  ],
- "limitations": "Uses the repository's local block-attention kernels, not the upstream fused implementation; no optimized generation cache is claimed. Registered and admitted within the shared budget; no formal result is published yet. Parameters, memory and speed are outcomes, not controls.",
+ "limitations": "Single seed 42. Uses the repository's local block-attention kernels, not the upstream fused implementation; no optimized generation cache is claimed. Trained with the local MoBA kernel backend and deterministic SDPA without FlashAttention for MHA; CORE evaluation uses the reference path. Parameters, memory and speed are outcomes, not controls.",
  "diagram": "custom",
  "architecture": {
   "kind": "custom",
