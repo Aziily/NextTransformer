@@ -3,12 +3,31 @@ title: 路线图
 description: NextTransformer 接下来的计划。
 ---
 
-## 2026 年 11 月 14 日前：agent 原生研究
+## 2026 年 11 月 14 日前：Arena v2，agent 原生研究
 
-- 全面支持 agent 自主研究的 **Arena v2**：一个带 MCP 工具的研究 gym，可以提交、校准、训练候选并在 dev 划分上打分，验证集和 CORE 保持封存。
-- 每次尝试都有**计量的算力和研究轨迹**，研究成本自动披露。
-- **自我改进的研究循环**：agent 不仅改进它找到的东西，也改进它的搜索方式。
-- **按研究者排名的排行榜**：哪个 LLM 和框架、以多少研究成本、发现了什么。
+1. **用 Harbor 格式组织 auto-research 任务。**
+   - 仓库本身作为 gym 的 sidecar 服务，向模型提供接口。
+   - 模型在一个封闭的容器内开发。
+   - agent 可以访问仓库的全部历史记录，也可以上网搜索，找出最好的架构。
+2. **分为三个集合。**
+   - 训练集：ClimbMix 训练分片。
+   - 验证集：训练数据的最后一个分片。
+   - 测试集：CORE-22。
+   - agent 可以用训练集和验证集调整算法，但最终评分只在不可见的 CORE-22 上进行。
+3. **最终提交只是一份文件。** 之后由 gym 完成最终训练。
+
+4. **Gym 接口。**
+   - **接入方式**：容器内的 `/run/gym-auth/credential.json` 提供 endpoint 和 token。每次调用是一个 JSON `POST /v1/call`，带操作名和参数；Python 的 `GymClient` 做了封装，不导入任何训练代码。
+   - **信息**：`describe_space`、`list_components`、`read_reference`、`get_resources`，查看搜索空间、可用组件、只读参考代码和资源上限。
+   - **预检测**：`validate_candidate`、`calibrate_candidate`、`debug_candidate`、`inspect_cost`，在消耗研究算力前检查候选能否加载、FLOPs/token 和参数量是否合规。
+   - **固定实验**：`run_experiment` 在固定配置下训练候选，可以从检查点续训；用 `get_job`、`get_result`、`cancel_job` 跟踪。
+   - **预算**：`quote_experiment` 在运行前报价，`get_budget` 查看剩余额度。每次实验都从固定的研究算力额度中扣除，用完即停。
+   - **提交**：`finalize` 把一个候选冻结为最终文件。
+
+后续扩展：
+
+- **Anti-hack 检测：** 检查 auto-research 系统最终轨迹里有没有 hacking 行为。
+- **视觉看板：** 展示系统如何从初始架构一步步进化到最终结果。
 
 ## 2026 年 11 月：扩展规模
 

@@ -3,13 +3,37 @@ title: Roadmap
 description: What is coming next to NextTransformer.
 ---
 
-## By November 14, 2026: agent-native research
+## By November 14, 2026: Arena v2, agent-native research
 
-- **Arena v2** with full support for autonomous agent research: a research gym with MCP tools to submit, calibrate,
-  train and score candidates on the dev split while validation and CORE stay sealed.
-- **Metered compute and research traces** for every attempt, so research cost is disclosed automatically.
-- **Self-improving research loops**: agents improve how they search, not only what they find.
-- **Leaderboards by researcher**: which LLM and framework found what, at what research cost.
+1. **Auto-research tasks in Harbor format.**
+   - The repository runs as the gym's sidecar service and exposes its interfaces to the model.
+   - The model develops inside a closed container.
+   - The agent can read the repository's full history and search the web to find the best architecture.
+2. **Three splits.**
+   - Training: the ClimbMix training shards.
+   - Validation: the last shard of the training data.
+   - Test: CORE-22.
+   - The agent tunes on training and validation; the final score comes only from the unseen CORE-22.
+3. **The submission is a single file.** The gym then runs the final training itself.
+
+4. **Gym interfaces.**
+   - **Connecting:** the container receives an endpoint and token in `/run/gym-auth/credential.json`. Each call is a JSON
+     `POST /v1/call` with an operation name and parameters; the Python `GymClient` wraps it without importing any
+     training code.
+   - **Information:** `describe_space`, `list_components`, `read_reference`, `get_resources` for the search space,
+     available components, read-only reference code and resource limits.
+   - **Pre-check:** `validate_candidate`, `calibrate_candidate`, `debug_candidate`, `inspect_cost` check a candidate's
+     loading, FLOPs/token and parameter budget before it spends research compute.
+   - **Fixed experiments:** `run_experiment` trains a candidate under a fixed profile and can continue from a checkpoint;
+     `get_job`, `get_result`, `cancel_job` track it.
+   - **Budget:** `quote_experiment` prices an experiment before it runs, and `get_budget` shows what remains. Every run
+     draws on a fixed research allocation; when it runs out, experiments stop.
+   - **Submission:** `finalize` freezes one candidate as the final file.
+
+Later:
+
+- **Anti-hack checks:** inspect the auto-research system's final trajectory for hacking.
+- **Visual dashboard:** show how the system evolves from the starting architecture to its final result.
 
 ## November 2026: scaling
 
