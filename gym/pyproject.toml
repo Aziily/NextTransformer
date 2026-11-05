@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nexttransformer-gym"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "harbor==0.24.0",
+    "jsonschema>=4.23,<5",
+    "mcp>=1.26,<2",
+]
+
+[project.scripts]
+nt-gym = "nexttransformer_gym.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.optional-dependencies]
+worker = [
+  "torch==2.9.1", "numpy==2.2.6", "pyarrow==21.0.0", "tiktoken==0.12.0",
+  "rustbpe==0.1.0", "psutil==7.1.3"
+]
+
+[tool.uv.sources]
+torch = [{index = "pytorch-cpu", extra = "worker"}]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

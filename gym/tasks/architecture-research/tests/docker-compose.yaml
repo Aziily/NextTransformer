@@ -1,0 +1,23 @@
+# Materialized by gym/run_trial.py; the verifier never receives host training state.
+services:
+  main:
+    image: ${GYM_VERIFIER_IMAGE:?Prepare a digest-pinned verifier image}
+    pull_policy: never
+    command:
+    - sleep
+    - infinity
+    network_mode: none
+    volumes:
+    - type: bind
+      source: ${GYM_VERIFIER_AUTH_DIR:?Use gym/run_trial.py to provision verifier
+        credentials}
+      target: /run/verifier-auth
+      read_only: true
+      bind:
+        create_host_path: false
+    cap_drop:
+    - ALL
+    security_opt:
+    - no-new-privileges:true
+    cpus: 1
+    mem_limit: 256m

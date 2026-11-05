@@ -1,0 +1,51 @@
+schema_version = "1.4"
+
+[[artifacts]]
+source = "/workspace/submission.json"
+destination = "submission.json"
+
+[[artifacts]]
+source = "/run/gym-runtime/status.json"
+destination = "agent-runtime.json"
+
+[[artifacts]]
+source = "/export/evidence.json"
+destination = "gym-evidence.json"
+
+[task]
+name = "nexttransformer/architecture-research"
+description = "Architecture auto-research through the Gym API with native Claude Code and separate submission verification"
+
+[metadata]
+cohort = "bounded-integration-fixture"
+performance_scoring = false
+
+[agent]
+timeout_sec = 1800.0
+user = "agent"
+
+[environment]
+docker_image = "${GYM_CLIENT_IMAGE}"
+cpus = 1
+memory_mb = 2048
+storage_mb = 1024
+
+[[environment.mcp_servers]]
+name = "gym"
+transport = "stdio"
+command = "python"
+args = ["-m", "nexttransformer_gym.mcp_server"]
+
+[verifier]
+timeout_sec = 60.0
+environment_mode = "separate"
+
+[[verifier.collect]]
+service = "main"
+command = "python /opt/gym/runtime_snapshot.py"
+user = "root"
+
+[verifier.environment]
+docker_image = "${GYM_VERIFIER_IMAGE}"
+cpus = 1
+memory_mb = 256

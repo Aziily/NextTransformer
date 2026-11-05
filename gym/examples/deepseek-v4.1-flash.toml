@@ -1,0 +1,25 @@
+# User-requested model example; use your gateway's actual model ID.
+# Claude Code requires an Anthropic Messages-compatible endpoint, not just
+# an OpenAI chat-completions URL. Set ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY
+# in the controller environment. Model IDs and routing are provider-specific.
+[agent]
+name = "claude-code"
+model_env = "GYM_RESEARCH_MODEL"
+version = "2.1.312"
+max_turns = 64
+# Optional API cost limit. Remove this line to omit the limit.
+max_budget_usd = "5.00"
+
+[budget]
+research_flops_limit = "1000000000000"
+
+[runtime]
+# Optional: operator-owned GPU allocation and an existing host CUDA interpreter.
+# execution_config = "gym/examples/resources.gpu.json"
+# worker_python = "/path/to/cuda-environment/bin/python"
+jobs_dir = ".agent-work/harbor-gym-deepseek"
+timeout_sec = 1800
+
+[images]
+client = "nt-gym-client:local"
+verifier = "nt-gym-verifier:local"

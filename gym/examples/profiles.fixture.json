@@ -1,0 +1,44 @@
+{
+  "research-fixture": {
+    "id": "research-fixture",
+    "kind": "research",
+    "resource_profile_id": "cpu-fixture-v1",
+    "width": 32,
+    "heads": 2,
+    "sequence_len": 8,
+    "vocab_size": 64,
+    "batch_size": 1,
+    "max_updates": 8,
+    "dev_batches": 1,
+    "timeout_sec": 120,
+    "device": "cpu",
+    "formal_dimensions": false,
+    "official_compatibility_verified": false,
+    "data": {
+      "kind": "synthetic_fixture"
+    },
+    "memory_limit_bytes": 4294967296,
+    "checkpoint_quota_bytes": 1073741824
+  },
+  "final-fixture": {
+    "id": "final-fixture",
+    "kind": "final",
+    "resource_profile_id": "cpu-fixture-v1",
+    "width": 32,
+    "heads": 2,
+    "sequence_len": 8,
+    "vocab_size": 64,
+    "batch_size": 1,
+    "max_updates": 2,
+    "dev_batches": 1,
+    "timeout_sec": 120,
+    "device": "cpu",
+    "formal_dimensions": false,
+    "official_compatibility_verified": false,
+    "data": {
+      "kind": "synthetic_fixture"
+    },
+    "memory_limit_bytes": 4294967296,
+    "checkpoint_quota_bytes": 1073741824
+  }
+}

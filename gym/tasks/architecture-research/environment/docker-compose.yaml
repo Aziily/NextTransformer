@@ -1,0 +1,40 @@
+# Materialized with immutable images and per-trial host paths by gym/run_trial.py.
+services:
+  main:
+    image: ${GYM_CLIENT_IMAGE:?Prepare a digest-pinned client image}
+    pull_policy: never
+    command:
+    - sleep
+    - infinity
+    user: agent
+    working_dir: /workspace
+    networks:
+    - agent-egress
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    volumes:
+    - type: bind
+      source: ${GYM_AGENT_AUTH_DIR:?Use gym/run_trial.py to provision credentials}
+      target: /run/gym-auth
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ${GYM_EXPORT_DIR:?Use gym/run_trial.py to provision signed evidence}
+      target: /export
+      read_only: true
+      bind:
+        create_host_path: false
+    cap_drop:
+    - ALL
+    cap_add:
+    - CHOWN
+    - FOWNER
+    - DAC_OVERRIDE
+    security_opt:
+    - no-new-privileges:true
+    cpus: 1
+    mem_limit: 2g
+    pids_limit: 128
+networks:
+  agent-egress: {}
