@@ -1,0 +1,6 @@
+{
+  "schema_version": "gym.execution.v1",
+  "gpu_ids": [],
+  "gpu_memory_limit_bytes": 4294967296,
+  "max_concurrent_jobs": 1
+}

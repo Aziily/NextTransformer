@@ -98,8 +98,8 @@ Anthropic stub (no external model calls):
 uv run --project gym python gym/smoke.py
 ```
 
-The stub asks Claude Code to execute the bounded Gym workflow through its real
-Bash tool: historical context and resources, two candidates, checkpoint continuation,
+The stub first asks Claude Code to call the native `gym` MCP server for resources,
+then execute the bounded Gym workflow through its real Bash tool: historical context and resources, two candidates, checkpoint continuation,
 final checks and a submission receipt. This is integration coverage, not an AI
 architecture-search quality measurement. A prepared client image with the pinned
 CLI can be selected using `--client-image`; otherwise Harbor installs the CLI.
@@ -134,14 +134,68 @@ new candidates cannot access CORE-22 evaluation during research.
 packages. Other sessions' private results are inaccessible. The Agent has no need
 for filesystem or Git access to the repository.
 
-`get_resources` observes the actual local backend: server identity, CPU capacity,
-memory limit, configured CUDA devices, supported research devices and the global
-worker slot. Jobs record their execution server. `--server-id` supplies a stable
-operator name; otherwise the launcher derives an ID from the local host. Training
-subprocesses execute on the same node as Gym. The shipped backend reports **one
-local server**, not a discovered remote cluster; GPU research and remote dispatch
-require additional deployment adapters. Uncertain work in any session retains
-the shared slot until reconciled.
+`get_resources` observes the actual local backend: server identity, CPU/memory,
+NVIDIA inventory, configured allocation, currently available cards and the shared
+worker slot. `servers` contains one local node. Each GPU reports its UUID/index,
+name, total/free memory, utilization, allocation, availability and busy reason.
+Jobs record the selected server and actual GPU; results include actual parameter
+devices, CUDA/PyTorch versions and peak GPU memory. Discovery failure is reported
+as unavailable, not as invented capacity. Remote dispatch is not implemented.
+
+The operator controls allocation with `--execution-config`; the Agent can read it
+but cannot expand it. CPU is the default. Start with `examples/resources.gpu.json`,
+replace the placeholder card with an allocated physical index or UUID, and set its
+memory allowance. The local backend runs one numerical job at a time. A busy GPU
+keeps work queued with a waiting reason; no numerical FLOPs are charged until
+execution, and its budget reservation remains held. There is no CPU fallback for
+GPU jobs. Checks also use the configured allocation. Cooperative leases coordinate
+Gym instances sharing the same host/user lease directory; external host jobs still
+need operator coordination. Memory limits combine conservative admission bounds
+and the PyTorch allocator cap; they are not a hardware partition.
+
+For a host service, pass `--execution-config <operator.json>` and optionally
+`--worker-python <CUDA-enabled-python>` to `nt-gym` alongside its required state,
+profiles and platform paths. Use the same configuration/interpreter for bootstrap,
+serve and later controller commands. The actual worker runtime is recorded in
+revision identities. `--server-id` sets a stable operator node name. The existing
+HTTP listener retains its first OS-assigned port across restarts.
+
+For Harbor, set `runtime.execution_config` in the example TOML or pass
+`--execution-config gym/examples/resources.gpu.json` to `run_trial.py`. The helper
+freezes the policy into the trial artifacts and mounts it only into Gym. GPU
+containers require a CUDA-enabled service image and the NVIDIA Docker runtime;
+preflight checks these before creating trial volumes. The Agent container receives
+no GPU devices. See [VALIDATION.md](VALIDATION.md) for the host GPU smoke and the
+separate container-runtime limitation of this machine.
+
+An Agent may choose `target_update` (absolute step), `server_id` and an authorized
+`gpu_id` on `quote_experiment`; omit placement to let Gym select an idle allocated
+card. It can write scripts which orchestrate these APIs, but cannot submit shell
+commands, trainer replacements, environment overrides, data paths or SSH jobs.
+See `examples/research_with_placement.py` for a complete bounded submission flow.
+
+## HTTP contract and MCP tools
+
+**HTTP is the authoritative interface.** `describe_space.operation_schemas` exposes
+all Agent operation names, descriptions, JSON input schemas and read-only hints.
+The stdio MCP adapter obtains these definitions from authenticated HTTP discovery
+and forwards every tool call through the same `GymClient`. It has no separate
+scheduler, ledger, authorization policy or training imports. HTTP results and Gym
+error envelopes are preserved; MCP additionally sets `isError` for failed calls.
+A new HTTP operation therefore appears in MCP without another tool definition.
+
+The native Harbor task registers server `gym` under `environment.mcp_servers`.
+Claude Code receives these tools through Harbor's standard MCP integration, with
+no custom Agent implementation. Both SDK and MCP read the same session credential:
+
+```sh
+python -m nexttransformer_gym.mcp_server --credential /run/gym-auth/credential.json
+```
+
+`examples/mcp.json` supplies the equivalent stdio registration for a client with
+the Gym adapter installed. MCP adds no host listener and no independently exposed
+credential. SDK scripts and MCP tools can be mixed within the same session, budget,
+job lifecycle and idempotency scope.
 
 ## Native plugin compatibility
 

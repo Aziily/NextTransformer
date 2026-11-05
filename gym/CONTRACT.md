@@ -54,14 +54,18 @@ Research imports, shape inspection and numerical execution run in fresh bubblewr
 user/mount/PID/network namespaces. Only runtime libraries, read-only platform code,
 approved data and the current job's output/checkpoint are mounted. Controller
 state, credential volumes, host processes and host networking are not mounted.
-There is no unsandboxed research fallback. The shipped sandbox maps CPU resources;
-GPU device isolation requires a deployment-specific worker configuration.
+There is no unsandboxed research fallback. CPU inspection receives no GPU devices.
+Configured CUDA research workers receive only the selected NVIDIA device plus its
+control/UVM devices and read-only driver metadata, with a private PID procfs.
+GPU execution requires an operator allocation and a CUDA-enabled worker runtime.
 
 ## API and persistence
 
 Every HTTP call uses `/v1/call`, schema `gym.api.v1`, an operation, a JSON
 parameter object, and a bearer session credential. The SDK sends only these
-messages. Agent and verifier credentials have separate scopes. Sessions and
+messages. HTTP owns the canonical operation schemas exposed by `describe_space`.
+The stdio MCP adapter discovers those schemas and forwards tool calls to HTTP;
+it preserves authorization, budget/idempotency rules, results and error envelopes. Agent and verifier credentials have separate scopes. Sessions and
 allocations can only be created through a trusted local controller.
 
 Supported operations follow section 8 of the design: space/resources/catalog,
@@ -143,12 +147,27 @@ inference or arbitrary local shell CPU. The oracle is an explicitly selected
 bounded test. The local model-stub smoke exercises native Claude Code without
 calling an external model provider.
 
-`get_resources` reports the local execution node and observed CPU/memory capacity.
-The launcher passes its node identity into the sidecar, and dispatched jobs record
-that identity. Capacity is one shared worker slot; running/cancelling/uncertain
-jobs from all sessions affect availability. The built-in backend launches local
-subprocesses, supports CPU research, and makes no remote-server discovery or
-GPU research scheduling claim.
+`get_resources` reports the local execution node, CPU/memory capacity, discovered
+NVIDIA devices, operator-allocated devices and observed availability. Device rows
+include UUID/index, name, free/total memory, utilization and busy reasons. The
+launcher passes its node identity into the sidecar. Agent quotes may choose that
+node, an allocated GPU and an absolute target update within the fixed profile.
+The backend launches the fixed trainer locally; it accepts no shell, environment,
+data-path or remote-execution overrides. Only one shared worker slot is supported;
+running/cancelling/uncertain jobs from all sessions affect availability.
+
+GPU jobs acquire a cooperative lease and recheck host occupancy before launch.
+If capacity is unavailable they remain queued with a waiting reason and reserved
+budget, without numerical charges or CPU fallback. Leases coordinate same-user
+Gym processes sharing the host lease directory, not unrelated host applications
+or different container lease filesystems. Operators must allocate dedicated cards
+across those boundaries. The GPU memory policy uses conservative quote admission
+and the PyTorch allocator fraction, not a hardware memory partition or a guarantee
+against arbitrary direct CUDA allocations. Results record measured parameter
+devices, runtime versions and peak memory. Remote nodes and concurrent workers are
+not implemented. A CUDA service image and NVIDIA Docker runtime are required for
+GPU execution inside the Harbor sidecar; a host CUDA smoke does not establish that
+deployment's compatibility.
 
 `HarborRuntime(environment).snapshot()` uses Harbor's real environment `exec`
 API to read the main container's `/proc` state. Optional Agent-reported state is

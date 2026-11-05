@@ -6,7 +6,10 @@ build-backend = "hatchling.build"
 name = "nexttransformer-gym"
 version = "0.1.0"
 requires-python = ">=3.12,<3.14"
-dependencies = ["harbor==0.24.0"]
+dependencies = [
+    "harbor==0.24.0",
+    "mcp>=1.26,<2",
+]
 
 [project.scripts]
 nt-gym = "nexttransformer_gym.cli:main"

@@ -31,6 +31,12 @@ cpus = 1
 memory_mb = 2048
 storage_mb = 1024
 
+[[environment.mcp_servers]]
+name = "gym"
+transport = "stdio"
+command = "python"
+args = ["-m", "nexttransformer_gym.mcp_server"]
+
 [environment.env]
 GYM_CLIENT_IMAGE = "${GYM_CLIENT_IMAGE}"
 GYM_SERVICE_IMAGE = "${GYM_SERVICE_IMAGE}"

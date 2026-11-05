@@ -31,6 +31,7 @@ def command(python, platform, request):
         Path(sys.prefix),
         Path(sys.base_prefix),
         Path(python).resolve().parent.parent,
+        Path(python).absolute().parent.parent,
         Path(__file__).resolve().parent,
         Path(platform) / "nexttransformer",
         Path(platform) / "nanochat",
@@ -46,8 +47,9 @@ def command(python, platform, request):
     for path in ("/etc/ld.so.cache", "/etc/localtime"):
         if Path(path).exists():
             args += ["--ro-bind", path, path]
+    gpu = request.get("gpu") if request["mode"] != "inspect" else None
     args += [
-        "--dir",
+        "--proc" if gpu else "--dir",
         "/proc",
         "--dev",
         "/dev",
@@ -72,9 +74,29 @@ def command(python, platform, request):
         for path in [*data["train_paths"], data["dev_path"], data["tokenizer"]]:
             resolved = str(Path(path).resolve())
             args += ["--ro-bind", resolved, resolved]
-    require(
-        not str(request["profile"].get("device", "cpu")).startswith("cuda"),
-        "resource_unavailable",
-        "Research GPU plugins need a deployment-specific isolated device mapping; the supplied worker is CPU-only.",
-    )
+    if request["mode"] != "inspect" and str(
+        request["profile"].get("device", "cpu")
+    ).startswith("cuda"):
+        require(
+            gpu is not None
+            and type(gpu.get("device_minor")) is int
+            and gpu["device_minor"] >= 0,
+            "resource_unavailable",
+            "A scheduler GPU allocation is required.",
+        )
+        for node in (
+            f"/dev/nvidia{gpu['device_minor']}",
+            "/dev/nvidiactl",
+            "/dev/nvidia-uvm",
+        ):
+            require(
+                Path(node).exists(),
+                "resource_unavailable",
+                "Allocated CUDA device nodes are unavailable.",
+            )
+            args += ["--dev-bind", node, node]
+        # Private PID namespace procfs exposes only the worker; driver metadata is
+        # read-only. No host process tree, host network, or other GPU nodes.
+        if Path("/proc/driver/nvidia").exists():
+            args += ["--ro-bind", "/proc/driver/nvidia", "/proc/driver/nvidia"]
     return [*args, "--", python, "-m", "nexttransformer_gym.worker"]

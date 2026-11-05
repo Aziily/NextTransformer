@@ -8,64 +8,9 @@ import time
 from .common import GymError, canonical, identity, integer, new_id, require
 from .package import CONTRACT, ingest
 from .store import Store
+from .api import MUTATIONS, READS, PARAMETERS, OPERATION_SCHEMAS
 
 TERMINAL = {"succeeded", "failed", "cancelled", "budget_stopped"}
-MUTATIONS = {
-    "submit_candidate",
-    "validate_candidate",
-    "calibrate_candidate",
-    "debug_candidate",
-    "run_experiment",
-    "cancel_job",
-    "finalize",
-}
-READS = {
-    "describe_space",
-    "get_resources",
-    "list_components",
-    "read_reference",
-    "get_candidate",
-    "list_candidates",
-    "inspect_cost",
-    "quote_experiment",
-    "get_job",
-    "read_events",
-    "get_result",
-    "get_budget",
-    "get_submission",
-    "list_experiments",
-    "read_experiment",
-}
-PARAMETERS = {
-    "describe_space": set(),
-    "get_resources": {"resource_profile_id"},
-    "list_components": {"cursor", "limit"},
-    "read_reference": {"resource_id"},
-    "get_candidate": {"candidate_id"},
-    "list_candidates": {"cursor", "limit"},
-    "submit_candidate": {"package_base64"},
-    "inspect_cost": {"candidate_id", "profile_id"},
-    "quote_experiment": {
-        "candidate_id",
-        "profile_id",
-        "target_update",
-        "checkpoint_id",
-        "resource_profile_id",
-    },
-    "run_experiment": {"quote_id"},
-    "validate_candidate": {"candidate_id", "profile_id"},
-    "debug_candidate": {"candidate_id", "profile_id", "check", "shape"},
-    "calibrate_candidate": {"candidate_id", "profile_id", "grid"},
-    "get_job": {"job_id"},
-    "get_result": {"job_id"},
-    "cancel_job": {"job_id"},
-    "read_events": {"cursor", "limit"},
-    "get_budget": set(),
-    "finalize": {"candidate_id", "profile_id"},
-    "get_submission": {"submission_id"},
-    "list_experiments": {"scope", "cursor", "limit"},
-    "read_experiment": {"scope", "experiment_id"},
-}
 REQUIRED_CHECKS = {"construction", "numerical", "causal", "checkpoint", "cost_coverage"}
 
 
@@ -145,11 +90,15 @@ class Service:
                 "Operation is outside the agent API.",
             )
             require(
-                set(params)
-                <= PARAMETERS[operation]
-                | ({"idempotency_key"} if operation in MUTATIONS else set()),
+                set(params) <= PARAMETERS[operation],
                 "invalid_request",
                 "Unknown operation parameter; paths, commands and environment overrides are not accepted.",
+            )
+            require(
+                set(OPERATION_SCHEMAS[operation]["inputSchema"]["required"])
+                <= set(params),
+                "invalid_request",
+                "Missing required operation parameter; inspect describe_space for the HTTP schema.",
             )
             key, request = params.get("idempotency_key"), canonical([operation, params])
             if operation in MUTATIONS:
@@ -219,6 +168,9 @@ class Service:
         candidate_id, pid = p.get("candidate_id"), p.get("profile_id")
         report = self.cost(db, sid, candidate_id, pid)
         profile = self.profile(pid)
+        gpu_id = self.backend.validate_placement(
+            profile, p.get("gpu_id"), p.get("server_id")
+        )
         require(
             profile["kind"] == "research" or operation == "validate",
             "denied_access",
@@ -281,6 +233,8 @@ class Service:
             "start_update": start,
             "checkpoint_id": checkpoint_id,
             "resource_profile_id": resource,
+            "server_id": self.backend.server_id,
+            "gpu_id": gpu_id,
             "runtime_revision": self.backend.revision,
             "profile_hash": report["profile_hash"],
             "candidate_hash": report["candidate_hash"],
@@ -342,12 +296,11 @@ class Service:
                 "plugin_interface": "nexttransformer.models.plugins",
                 "profiles": list(self.backend.public_profiles()),
                 "operations": sorted(READS | MUTATIONS),
+                "operation_schemas": OPERATION_SCHEMAS,
                 "required_checks": sorted(REQUIRED_CHECKS),
                 "runtime_revision": self.backend.revision,
             }
         if op == "get_resources":
-            from .resources import observe
-
             session = self.session(db, sid)
             jobs = s.all(db, sid, "job")
             running = sum(
@@ -366,9 +319,7 @@ class Service:
                 json.loads(raw)["state"] in {"running", "cancelling", "reconciliation"}
                 for (raw,) in db.execute("SELECT value FROM objects WHERE kind='job'")
             )
-            server = observe(
-                self.backend.server_id, self.backend.profiles.values(), global_busy
-            )
+            server = self.backend.resources(global_busy)
             return {
                 "schema_version": "gym.resources.v1",
                 "observed_at": time.time(),

@@ -8,7 +8,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from .common import GymError
+from .common import GymError, require
 
 
 def emit(value):
@@ -52,18 +52,65 @@ def execute(request):
         request["profile"],
         request["quote"],
     )
+    device = torch.device(profile.get("device", "cpu"))
+    gpu = request.get("gpu")
+    if device.type == "cuda":
+        require(
+            gpu is not None
+            and torch.cuda.is_available()
+            and torch.cuda.device_count() == 1,
+            "resource_unavailable",
+            "Selected CUDA allocation is unavailable inside worker isolation.",
+        )
+        properties = torch.cuda.get_device_properties(0)
+        require(
+            gpu["memory_limit_bytes"] <= properties.total_memory,
+            "resource_unavailable",
+            "GPU memory budget exceeds device capacity.",
+        )
+        torch.cuda.set_per_process_memory_fraction(
+            gpu["memory_limit_bytes"] / properties.total_memory, 0
+        )
+        torch.cuda.reset_peak_memory_stats(0)
     report = quote["cost_report"]
     init, forward, backward, optimizer_cost = (
         int(report[k]) for k in ("initialization", "forward", "backward", "optimizer")
     )
     model = operation("initialization", init, lambda: build(candidate, profile))
+
+    def execution():
+        parameters = sorted({str(p.device) for p in model.parameters()})
+        result = {
+            "device": str(device),
+            "model_parameter_devices": parameters,
+            "cuda_available": torch.cuda.is_available(),
+            "torch_version": torch.__version__,
+            "cuda_version": torch.version.cuda,
+        }
+        if device.type == "cuda":
+            require(
+                parameters == ["cuda:0"],
+                "resource_unavailable",
+                "Model parameters did not use the allocated CUDA device.",
+            )
+            torch.cuda.synchronize(0)
+            result.update(
+                gpu_id=gpu["id"],
+                gpu_name=torch.cuda.get_device_name(0),
+                peak_memory_allocated_bytes=torch.cuda.max_memory_allocated(0),
+                peak_memory_reserved_bytes=torch.cuda.max_memory_reserved(0),
+                memory_limit_bytes=gpu["memory_limit_bytes"],
+            )
+        return result
+
+    emit({"kind": "runtime", "value": execution()})
     optimizer = build_optimizer(model, NativeTrainConfig())
     train, dev, token_bytes = streams(profile)
     step, cumulative = 0, 0
     if request.get("checkpoint"):
         saved = torch.load(
             request["checkpoint"],
-            map_location=profile.get("device", "cpu"),
+            map_location="cpu",
             weights_only=False,
         )
         if (
@@ -77,7 +124,6 @@ def execute(request):
         restore_rng(saved["rng"])
         model.restore_routing_rng(saved["routing_rng"])
         step, cumulative = saved["step"], saved["cumulative_flops"]
-    device = torch.device(profile.get("device", "cpu"))
     batch, length = profile["batch_size"], profile["sequence_len"]
     curves = []
     if quote["operation"] == "validate":
@@ -119,7 +165,7 @@ def execute(request):
                     checkpoint,
                 )
                 checkpoint.seek(0)
-                saved = torch.load(checkpoint, weights_only=False)
+                saved = torch.load(checkpoint, weights_only=False, map_location="cpu")
                 restored = build(candidate, profile)
                 restored.load_state_dict(saved["model"])
                 restored_optimizer = build_optimizer(restored, NativeTrainConfig())
@@ -158,6 +204,7 @@ def execute(request):
                 "kind": "result",
                 "value": {
                     "checks": result,
+                    "execution": execution(),
                     "admitted": admitted,
                     "candidate_hash": candidate["hash"],
                     "profile_hash": quote["profile_hash"],
@@ -250,6 +297,7 @@ def execute(request):
             "kind": "result",
             "value": {
                 **metrics,
+                "execution": execution(),
                 "curves": curves,
                 "step": quote["target_update"],
                 "training_tokens": quote["target_update"] * batch * length,

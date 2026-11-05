@@ -5,9 +5,58 @@ PyTorch 2.9.1+cpu. Local tests used Python 3.12.15; container trials used
 Python 3.12.13. Native research workers use unprivileged user/mount/PID/network
 namespaces with no controller procfs mount. Runtime revisions bind the actual dependency and Python versions.
 
+## HTTP, MCP and CUDA follow-up
+
+The final Gym suite passes **53 tests**. The repository suite passes **532 tests**,
+with 131 skipped and one existing tensor conversion warning. Ruff checks, example
+dry runs, whitespace checks and required change classification pass.
+
+HTTP publishes the canonical operation schemas. Official MCP SDK stdio integration
+checks that tool discovery matches those schemas and that HTTP/MCP share session
+scope, budget, result and error behavior. GPU tests distinguish discovered,
+allocated and available cards, reject unauthorized placement, recheck occupancy
+after leasing, fail closed on discovery/runtime failure and preserve reservations
+while busy jobs wait. Cancellation releases unexecuted reservations.
+
+A native Harbor **Claude Code 2.1.312** trial completed with zero exceptions and
+verifier reward **1**. The local Anthropic stub caused a native ToolSearch request,
+a successful `mcp__gym__get_resources` call and a Bash-based research workflow
+(two candidates, continuation, validation and submission). There were **four local
+stub requests and zero external model calls**. This validates the native MCP
+registration and HTTP path, not model research quality or provider routing.
+
+Separately, an explicitly allocated idle **A100-SXM4-80GB** completed a bounded
+host HTTP/MCP CUDA run under bubblewrap isolation. The controller used Python
+3.12.15 and the read-only numerical environment used Python 3.10.12,
+PyTorch **2.9.1+cu128**, CUDA runtime 12.8 and NVIDIA driver 535.54.03. The run
+performed four optimizer updates plus numerical validation. The resumed two-step
+checkpoint matched uninterrupted training bit-for-bit, including validation BPB.
+All five numerical checks passed; this is not formal protocol admission.
+The ledger charged **113,845,484 FLOPs**, with **zero reserved FLOPs** afterward.
+Results recorded actual `cuda:0` model parameters and about 17.85 MB peak allocated
+GPU memory, under a 2 GiB configured allowance. Resource discovery observed eight
+cards, of which only one was authorized for this smoke; other jobs were untouched.
+
+Reproduce with a deliberately allocated idle card and a pinned CUDA interpreter:
+
+```sh
+PYTHONPATH=gym/src:. gym/.venv/bin/python gym/gpu_smoke.py \
+  --state-dir .agent-work/gpu-smoke --gpu <allocated-index-or-uuid> \
+  --worker-python <cuda-python>
+```
+
+The native Harbor smoke used a CPU service image and a prepared client image with
+the cached MCP 1.30.0 dependencies and pinned Claude executable. The ordinary client
+Docker build was stopped after a stalled network wheel download; the prepared
+image passed offline import/version checks and the full trial. No credentials
+were copied into it. This host has no NVIDIA Docker runtime, so GPU sidecar execution
+was **not** tested in Docker. The runner refuses GPU trials without that runtime
+or a CUDA-enabled service image. No multi-node scheduling, paid model call,
+production ClimbMix run or full CORE-22 final evaluation was performed.
+
 ## Native Claude Code and research-context follow-up
 
-The current Gym suite passes **33 tests**; the repository suite passes **532 tests**
+The preceding research-context Gym suite passed **33 tests**; the repository suite passes **532 tests**
 with 131 skipped and one existing tensor conversion warning. Added checks cover
 published history pagination, model cards and model/config provenance, exact source
 references, session isolation, actual execution-node recording, cross-session
@@ -31,9 +80,8 @@ combines the Python runtime with the Node Bookworm base's CLI dependencies. For
 this smoke, the already-installed pinned Claude executable was copied into a
 separate client image; no host credentials were copied. This tests native CLI
 execution, not the network installer or a real DeepSeek/gateway connection. The
-service used the prepared CPU dependency base described below. No remote training
-server or GPU research capacity is claimed: the observed backend is one local
-server with one worker slot. The local model stub persists and reuses its port.
+service used the prepared CPU dependency base described below. At that earlier stage, only one local CPU server with one worker slot was tested.
+The CUDA follow-up above adds bounded local GPU evidence. The local model stub persists and reuses its port.
 
 Reproduce with `python gym/smoke.py --client-image <prepared-client-image>`;
 the normal client image lets Harbor install the pinned CLI instead.

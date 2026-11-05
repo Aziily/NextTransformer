@@ -25,7 +25,12 @@ def model_server(state, token):
     config = state / "listener.json"
     port = json.loads(config.read_text())["port"] if config.exists() else 0
     script = (ROOT / "tasks/architecture-research/solution/research.py").read_text()
-    calls = {"messages": 0, "research_commands": 0}
+    calls = {
+        "messages": 0,
+        "research_commands": 0,
+        "mcp_resource_calls": 0,
+        "mcp_resource_success": False,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -49,17 +54,45 @@ def model_server(state, token):
                 return
             calls["messages"] += 1
             tools = {t["name"] for t in data.get("tools", [])}
-            completed = any(
-                isinstance(m.get("content"), list)
-                and any(
-                    b.get("type") == "tool_result"
-                    and b.get("tool_use_id") == "toolu_gym_smoke"
-                    for b in m["content"]
-                    if isinstance(b, dict)
+            results = {
+                block["tool_use_id"]: block
+                for message in data.get("messages", [])
+                if isinstance(message.get("content"), list)
+                for block in message["content"]
+                if isinstance(block, dict) and block.get("type") == "tool_result"
+            }
+            completed = "toolu_gym_smoke" in results
+            resource_result = results.get("toolu_gym_resources")
+            if resource_result is not None:
+                calls["mcp_resource_success"] = not resource_result.get(
+                    "is_error", False
                 )
-                for m in data.get("messages", [])
+            resource_tool = next(
+                (name for name in tools if name == "mcp__gym__get_resources"), None
             )
-            if "Bash" in tools and not completed:
+            if resource_tool and resource_result is None:
+                block = {
+                    "type": "tool_use",
+                    "id": "toolu_gym_resources",
+                    "name": resource_tool,
+                    "input": {},
+                }
+                stop = "tool_use"
+                calls["mcp_resource_calls"] += 1
+            elif (
+                not resource_tool
+                and resource_result is None
+                and "ToolSearch" in tools
+                and "toolu_gym_search" not in results
+            ):
+                block = {
+                    "type": "tool_use",
+                    "id": "toolu_gym_search",
+                    "name": "ToolSearch",
+                    "input": {"query": "+gym get_resources", "max_results": 1},
+                }
+                stop = "tool_use"
+            elif "Bash" in tools and calls["mcp_resource_success"] and not completed:
                 block = {
                     "type": "tool_use",
                     "id": "toolu_gym_smoke",
@@ -187,7 +220,7 @@ def main():
                 "--model",
                 "claude-sonnet-4-5",
                 "--max-turns",
-                "4",
+                "6",
                 "--max-budget-usd",
                 "1",
                 "--timeout-sec",
@@ -218,6 +251,9 @@ def main():
         )
         assert calls["research_commands"] >= 1, (
             "Native Claude Code never requested the research tool"
+        )
+        assert calls["mcp_resource_calls"] >= 1 and calls["mcp_resource_success"], (
+            "Native Claude Code did not complete a Gym MCP resource call"
         )
         summary = {
             "trial_id": binding["GYM_TRIAL_ID"],

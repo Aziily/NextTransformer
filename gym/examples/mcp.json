@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "gym": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "nexttransformer_gym.mcp_server"]
+    }
+  }
+}

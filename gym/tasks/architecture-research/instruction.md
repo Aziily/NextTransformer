@@ -4,7 +4,9 @@ Design and compare native NextTransformer model plugins through the Gym API. Thi
 profile is a bounded synthetic integration fixture, not an official benchmark run.
 
 Read `/run/gym-auth/credential.json` for your session-scoped endpoint and token.
-Import `GymClient` from `nexttransformer_gym`; call `describe_space`, `get_resources`,
+Use the preconfigured `gym` MCP tools or import `GymClient` from
+`nexttransformer_gym`. Both use the same HTTP API and session budget.
+Call `describe_space`, `get_resources`,
 and `list_components` before starting. Candidate packages must follow the
 `proposal.json`, `architecture.json`, `plugin/<method>/method.json` and
 `plugin/<method>/__init__.py` contract. Use `/opt/gym/make_candidate.py` as an example.
@@ -15,7 +17,13 @@ with `read_reference` for architecture code. These are published historical
 results and current reference files; check provenance before assuming a source
 file is identical to the historical run. `scope="session"` shows your own research
 jobs, results and candidate source. No repository checkout or Git history is needed.
-`get_resources` reports the actual local execution node and worker availability.
+`get_resources` reports the actual local execution node, GPU inventory, configured
+allocation, memory allowance and current worker/card availability. On
+`quote_experiment`, you may choose an allocated `gpu_id`, the local `server_id` and
+`target_update` (absolute step, not additional steps); omit placement for automatic
+selection. A busy GPU keeps the job queued. Use `get_job` to read its waiting reason.
+Orchestrating Gym calls in a script is allowed; arbitrary training commands,
+trainer/data/environment overrides and remote shell jobs are not supported.
 Use `get_budget` and `quote_experiment`: the finite allocation covers all of this
 session's Gym numerical work, including checks. CORE-22 testing for your candidates
 is unavailable during research. You may use internet research from this container.

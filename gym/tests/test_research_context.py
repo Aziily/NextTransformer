@@ -123,3 +123,72 @@ def test_launcher_rejects_unbounded_budget_before_docker(monkeypatch):
     )
     with pytest.raises(SystemExit):
         runner["arguments"]()
+
+
+def test_launcher_freezes_gpu_uuid_and_mounts_policy_only_in_gym(monkeypatch, tmp_path):
+    import shutil
+    import subprocess
+    from types import SimpleNamespace
+
+    import yaml
+
+    from nexttransformer_gym.gpu import configuration
+
+    runner = runpy.run_path(str(ROOT / "gym/run_trial.py"))
+    gpu_uuid = "GPU-12345678-1234-1234-1234-123456789abc"
+    preflight = runner["check_gpu_runtime"]
+    monkeypatch.setitem(
+        preflight.__globals__,
+        "discover",
+        lambda: {"status": "ok", "gpus": [{"index": 3, "uuid": gpu_uuid}]},
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout='{"nvidia": {}}'),
+    )
+    args = SimpleNamespace(
+        execution_policy=configuration({"gpu_ids": [3]}), service_image="cuda-service"
+    )
+    preflight(args)
+    assert args.execution_policy["gpu_ids"] == [gpu_uuid]
+
+    task = tmp_path / "task"
+    shutil.copytree(ROOT / "gym/tasks/architecture-research", task)
+    compose_path = task / "environment/docker-compose.yaml"
+    original = yaml.safe_load(compose_path.read_text())
+    runner["configure_execution"](task, args.execution_policy, tmp_path, "fixture")
+    compose = yaml.safe_load(compose_path.read_text())
+    assert compose["services"]["main"] == original["services"]["main"]
+    gym = compose["services"]["gym"]
+    devices = gym["deploy"]["resources"]["reservations"]["devices"]
+    assert devices == [
+        {"driver": "nvidia", "device_ids": [gpu_uuid], "capabilities": ["gpu"]}
+    ]
+    mount = gym["volumes"][-1]
+    snapshot = tmp_path / "fixture.execution.json"
+    assert mount == {
+        "type": "bind",
+        "source": str(snapshot.resolve()),
+        "target": "/run/gym-execution/config.json",
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    }
+    assert gym["environment"]["GYM_EXECUTION_CONFIG"] == mount["target"]
+    assert json.loads(snapshot.read_text()) == args.execution_policy
+
+
+@pytest.mark.parametrize("case", ["unavailable", "missing", "aliased"])
+def test_launcher_rejects_unresolved_or_duplicate_physical_gpus(monkeypatch, case):
+    from nexttransformer_gym.gpu import configuration
+
+    runner = runpy.run_path(str(ROOT / "gym/run_trial.py"))
+    resolve = runner["resolve_gpu_policy"]
+    gpu_uuid = "GPU-12345678-1234-1234-1234-123456789abc"
+    observation = {"status": "ok", "gpus": [{"index": 3, "uuid": gpu_uuid}]}
+    selectors = [3, gpu_uuid] if case == "aliased" else [7]
+    if case == "unavailable":
+        observation = {"status": "unavailable", "gpus": []}
+    monkeypatch.setitem(resolve.__globals__, "discover", lambda: observation)
+    with pytest.raises(SystemExit):
+        resolve(configuration({"gpu_ids": selectors}))

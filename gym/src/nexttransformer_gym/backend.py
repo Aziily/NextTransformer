@@ -3,7 +3,6 @@
 import fcntl
 import hashlib
 import json
-import importlib.metadata
 import os
 import queue
 import threading
@@ -12,22 +11,50 @@ import sys
 import time
 import tempfile
 import shutil
+import copy
+from contextlib import ExitStack
 from pathlib import Path
 from .common import GymError, canonical, identity, new_id, require, file_hash
 
 
 class NativeBackend:
-    def __init__(self, profiles, state_dir, platform_root, python=None, server_id=None):
+    def __init__(
+        self,
+        profiles,
+        state_dir,
+        platform_root,
+        python=None,
+        server_id=None,
+        execution_config=None,
+    ):
         from .resources import local_server_id
 
         self.server_id = server_id or local_server_id()
-        self.profiles = profiles
+        from .gpu import configuration
+
+        self.execution_config = configuration(execution_config)
+        self.profiles = copy.deepcopy(profiles)
+        for profile in self.profiles.values():
+            if self.execution_config["gpu_ids"] and not profile.get("official_plan"):
+                profile["device"] = "cuda:0"
+                profile.pop("cuda_visible_devices", None)
+                profile["accelerator_class"] = "cuda"
+                profile["memory_limit_bytes"] = self.execution_config[
+                    "gpu_memory_limit_bytes"
+                ]
+                profile["resource_profile_id"] += "/cuda"
+            elif not profile.get("official_plan"):
+                require(
+                    not str(profile.get("device", "cpu")).startswith("cuda"),
+                    "invalid_request",
+                    "Research CUDA profiles require an operator execution config.",
+                )
         self.state_dir, self.platform_root = (
             Path(state_dir).resolve(),
             Path(platform_root).resolve(),
         )
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.python = python or sys.executable
+        self.python = str(Path(python or sys.executable).absolute())
         for pid, profile in profiles.items():
             require(
                 profile["id"] == pid and profile["kind"] in {"research", "final"},
@@ -73,28 +100,138 @@ class NativeBackend:
                 for p in sorted(source_files)
             }
         )
-        dependencies = {
-            name: importlib.metadata.version(name)
-            for name in (
-                "torch",
-                "numpy",
-                "pyarrow",
-                "tiktoken",
-                "rustbpe",
-                "filelock",
-                "fsspec",
-                "sympy",
+        # Query the actual numerical interpreter, not the controller environment.
+        metadata_script = """
+import ast, importlib.metadata as m, json, sys
+names = ('torch', 'numpy', 'pyarrow', 'tiktoken', 'rustbpe', 'filelock', 'fsspec', 'sympy')
+version = m.distribution('torch').locate_file('torch/version.py').read_text()
+cuda = None
+for node in ast.walk(ast.parse(version)):
+    if isinstance(node, ast.AnnAssign) and getattr(node.target, 'id', '') == 'cuda':
+        cuda = ast.literal_eval(node.value)
+print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list(sys.version_info[:3]), 'cuda_version':cuda}))
+"""
+        try:
+            self.worker_runtime = json.loads(
+                subprocess.check_output(
+                    [self.python, "-c", metadata_script], text=True, timeout=30
+                )
             )
-        }
+        except (OSError, subprocess.SubprocessError, ValueError):
+            raise GymError(
+                "resource_unavailable",
+                "Cannot inspect the configured numerical Python runtime.",
+            ) from None
         self.revision = identity(
             {
                 "source": self.revision,
-                "dependencies": dependencies,
-                "python": list(sys.version_info[:3]),
+                "worker_runtime": self.worker_runtime,
+                "execution_config": self.execution_config,
                 "compute_dtype": "float32",
             }
         )
         self.cache = {}
+
+    def validate_placement(self, profile, gpu_id=None, server_id=None):
+        from .gpu import allocated, discover
+
+        require(
+            server_id is None or server_id == self.server_id,
+            "invalid_request",
+            "Only this configured local execution node is supported.",
+        )
+        if not str(profile.get("device", "cpu")).startswith("cuda"):
+            require(
+                gpu_id is None,
+                "invalid_request",
+                "CPU profiles do not accept GPU placement.",
+            )
+            return None
+        require(
+            not profile.get("official_plan"),
+            "invalid_request",
+            "Official placement is operator controlled.",
+        )
+        if gpu_id is None:
+            return None
+        require(
+            isinstance(gpu_id, (str, int)) and not isinstance(gpu_id, bool),
+            "invalid_request",
+            "Invalid GPU selection.",
+        )
+        card = next(
+            (
+                card
+                for card in allocated(self.execution_config, discover())
+                if str(gpu_id) in (card["id"], str(card["index"]))
+            ),
+            None,
+        )
+        require(
+            card is not None,
+            "invalid_request",
+            "GPU is not present in this node's configured allocation.",
+        )
+        return card["id"]
+
+    def resources(self, global_busy=False):
+        from .resources import observe
+        from .gpu import allocated, discover, idle, leased
+
+        node = observe(self.server_id, self.profiles.values(), global_busy)
+        inventory = discover()
+        allowed = {card["id"] for card in allocated(self.execution_config, inventory)}
+        runtime_ready = bool(self.worker_runtime["cuda_version"])
+        cards = []
+        for card in inventory["gpus"]:
+            assigned = card["id"] in allowed
+            held = assigned and leased(card["id"])
+            available = (
+                assigned
+                and idle(card, self.execution_config)
+                and not held
+                and not global_busy
+                and runtime_ready
+            )
+            cards.append(
+                {
+                    **{k: v for k, v in card.items() if k != "device_minor"},
+                    "allocated": assigned,
+                    "available": available,
+                    "busy_reason": None
+                    if available
+                    else "not_allocated"
+                    if not assigned
+                    else "cuda_runtime_unavailable"
+                    if not runtime_ready
+                    else "worker_busy"
+                    if global_busy
+                    else "gpu_leased"
+                    if held
+                    else "gpu_busy_or_insufficient_memory",
+                    "memory_limit_bytes": self.execution_config[
+                        "gpu_memory_limit_bytes"
+                    ]
+                    if assigned
+                    else 0,
+                }
+            )
+        node.update(
+            gpu_discovery_status=inventory["status"],
+            discovered_gpu_count=len(cards),
+            allocated_gpu_count=len(allowed),
+            available_gpu_count=sum(card["available"] for card in cards),
+            gpus=cards,
+            configured_cuda_devices=self.execution_config["gpu_ids"],
+            execution_config=self.execution_config,
+            worker_runtime=self.worker_runtime,
+            research_devices=["cuda:0"]
+            if self.execution_config["gpu_ids"]
+            else ["cpu"],
+        )
+        if self.execution_config["gpu_ids"]:
+            node["allocatable_slots"] = int(any(card["available"] for card in cards))
+        return node
 
     def public_profiles(self):
         for profile in self.profiles.values():
@@ -114,6 +251,7 @@ class NativeBackend:
             }
             public.update(
                 accelerator_class=profile.get("accelerator_class", "cpu"),
+                device=profile.get("device", "cpu"),
                 usable_memory_bytes_per_device=profile.get("memory_limit_bytes"),
                 supported_device_counts=[len(devices)] if devices else [1],
                 supported_precisions=["bfloat16"]
@@ -124,7 +262,7 @@ class NativeBackend:
             )
             yield public
 
-    def environment(self, profile=None, official=False):
+    def environment(self, profile=None, official=False, gpu=None):
         # Explicit environment prevents ambient plugin paths, credentials and proxies.
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -145,13 +283,13 @@ class NativeBackend:
             and profile
             and str(profile.get("device", "cpu")).startswith("cuda")
         ):
-            devices = profile.get("cuda_visible_devices", [])
             require(
-                isinstance(devices, list) and len(devices) == 1,
+                gpu is not None,
                 "resource_unavailable",
-                "Research GPU execution requires one explicitly allocated device.",
+                "Research GPU execution requires a scheduler allocation.",
             )
-            env["CUDA_VISIBLE_DEVICES"] = str(devices[0])
+            env["CUDA_VISIBLE_DEVICES"] = gpu["id"]
+            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         if official:
             require(
                 profile is not None and profile.get("cuda_visible_devices"),
@@ -257,7 +395,10 @@ class Scheduler:
                     self.store.update(db, sid, "job", job)
 
     def work_once(self):
-        with (self.backend.state_dir / "worker.lock").open("a") as lock:
+        with (
+            ExitStack() as leases,
+            (self.backend.state_dir / "worker.lock").open("a") as lock,
+        ):
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -284,6 +425,30 @@ class Scheduler:
                     for _, raw in rows
                 ):
                     return False
+                quote = self.store.get(db, sid, "quote", job["quote_id"])
+                profile = self.backend.profiles[quote["profile_id"]]
+                if (
+                    str(profile.get("device", "cpu")).startswith("cuda")
+                    and quote["operation"] != "official"
+                ):
+                    from .gpu import reserve
+
+                    try:
+                        require(
+                            bool(self.backend.worker_runtime["cuda_version"]),
+                            "resource_unavailable",
+                            "Configured worker Python has no CUDA runtime.",
+                        )
+                        allocation = leases.enter_context(
+                            reserve(self.backend.execution_config, quote.get("gpu_id"))
+                        )
+                    except GymError as error:
+                        if job.get("waiting_reason") != str(error):
+                            job["waiting_reason"] = str(error)
+                            self.store.update(db, sid, "job", job)
+                        return False
+                    job["assigned_gpu"] = allocation
+                job.pop("waiting_reason", None)
                 job.update(
                     state="running", lease=new_id(), server_id=self.backend.server_id
                 )
@@ -336,6 +501,7 @@ class Scheduler:
             Path(workspace.name).chmod(0o777)
         request = {
             "mode": "execute",
+            "gpu": job.get("assigned_gpu"),
             "candidate": candidate,
             "profile": profile,
             "quote": quote,
@@ -353,7 +519,9 @@ class Scheduler:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            env=self.backend.environment(profile, quote["operation"] == "official"),
+            env=self.backend.environment(
+                profile, quote["operation"] == "official", request["gpu"]
+            ),
             cwd=self.backend.state_dir,
             start_new_session=True,
             **self.backend.worker_identity(request),
@@ -457,6 +625,9 @@ class Scheduler:
                         pending = None
                         current.pop("inflight", None)
                         self.store.update(db, sid, "job", current)
+                    elif kind == "runtime":
+                        current["execution"] = event["value"]
+                        self.store.update(db, sid, "job", current)
                     elif kind == "progress":
                         current["progress"] = event["step"]
                         self.store.update(db, sid, "job", current)
@@ -489,7 +660,12 @@ class Scheduler:
                     current["lease"] == job["lease"], "stale_lease", "Lost job lease."
                 )
                 if not cancelled and failure is None:
-                    result.update(id=job["id"], cost=self.store.budget(db, sid))
+                    result.update(
+                        id=job["id"],
+                        cost=self.store.budget(db, sid),
+                        server_id=self.backend.server_id,
+                        assigned_gpu=job.get("assigned_gpu"),
+                    )
                     if quote["operation"] == "validate":
                         self.store.put(db, sid, "report", {**result, "id": new_id()})
                     elif quote["operation"] != "official":
@@ -524,6 +700,8 @@ class Scheduler:
                             },
                         )
                         result["checkpoint_id"] = output_id
+                    if "execution" in result:
+                        current["execution"] = result["execution"]
                     self.store.put(db, sid, "result", result)
                 self.store.release(db, sid, job["id"])
                 current.update(

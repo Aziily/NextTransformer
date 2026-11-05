@@ -24,7 +24,8 @@ results or the existing official protocol.
   It needs no repository checkout or Git history. Gym exposes past experiments,
   results, model configurations and read-only architecture reference code.
 - A separate Gym sidecar runs this repository's training and evaluation service.
-  The Agent uses its HTTP SDK; the SDK imports no training code. The sidecar owns
+  The Agent uses its HTTP SDK or MCP tools projected from that HTTP API; neither
+  imports training code. The sidecar owns
   datasets, checkpoints, budgets and final training. Its private state and the
   verifier's credentials are not mounted into the Agent container.
 - Keep numerical workers network-isolated. Record actual Agent container process
@@ -45,7 +46,9 @@ current full shard numbering, validation is `shard_06542.parquet`; shard 06541
 is training data. This matches the repository's default `BestFitStream`:
 all preceding shards train, and the last shard validates. All candidates use the same fixed
 training/evaluation profiles, tokenizer and data order. The Agent may choose
-architecture and plugin options, but cannot override the experimental protocol.
+architecture and plugin options, absolute target updates within profile limits,
+and an operator-authorized local GPU. It cannot override the experimental protocol
+or provide arbitrary training commands. Gym launches the fixed trainer.
 
 Do not expose CORE-22 data, per-candidate results or a test-evaluation operation
 through the research environment/API. Final ranking uses only the agreed CORE-22
@@ -99,7 +102,10 @@ final runs, and research checkpoints are never used for final initialization.
 
 Read `endpoint` and `token` from `/run/gym-auth/credential.json`. Every call is a
 JSON `POST /v1/call` with `schema_version`, `operation`, and `params`, authenticated
-with the bearer token. The Python `GymClient` wraps this transport only.
+with the bearer token. The Python `GymClient` wraps this transport only. HTTP is the source of truth:
+`describe_space.operation_schemas` publishes operation definitions, and the stdio
+MCP adapter discovers them and forwards calls to the same authenticated HTTP
+service. Native Harbor registers this adapter for Claude Code.
 
 | Purpose | Operations |
 | --- | --- |
@@ -127,9 +133,9 @@ limits. Do not describe this ledger as metering every computation by the Agent.
 | Harbor task and sidecar | Native task layout, separate service/verifier and runtime collection exist | Retain this structure |
 | Agent | Native Harbor Claude Code default; custom broker/loop removed; model/budget examples supplied | Validate actual provider routing separately from the model-stub smoke |
 | Research environment | Agent-only internet access; Gym exposes published results, native model configurations and architecture reference code | Preserve provenance and owner-scoped private history; no Git access is required |
-| Execution resources | Gym observes its local CPU/memory limits and reports one server with one global worker slot; jobs record server identity | Remote and GPU research adapters remain deployment work; do not infer usable servers from declared counts |
+| Execution resources | Local NVIDIA discovery, operator GPU allocation, memory limits, busy queues, cooperative leases and real CUDA workers; one node and one worker slot | Validate the chosen CUDA container/runtime; remote dispatch and parallel workers are not implemented |
 | Data | Parquet adapter uses native last-shard validation (06542) and permits training through 06541; shipped task still uses synthetic CPU fixtures | Supply and validate production ClimbMix/tokenizer manifests |
-| Candidate/API | Native source packages, HTTP SDK, checks, jobs, continuation and budget ledger exist | Keep native interfaces; finish production execution and accounting validation |
+| Candidate/API | Native source packages, authoritative HTTP schemas, thin MCP adapter, checks, jobs, continuation and shared budget ledger exist | Keep native interfaces; finish production execution and accounting validation |
 | Final artifact | Candidate source/configuration live in durable Gym state; Harbor collects a `submission.json` receipt; final dispatch resolves retained code | Retain the agreed ID-based delivery and per-trial service state |
 | Final execution | Separate final dispatch and a native formal adapter exist; full GPU training is unverified | Wire post-acceptance dispatch and validate the new cohort's final training and CORE-22-only scoring |
 

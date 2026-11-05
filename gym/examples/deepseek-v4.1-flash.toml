@@ -13,6 +13,8 @@ max_budget_usd = "5.00"
 research_flops_limit = "1000000000000"
 
 [runtime]
+# Optional: operator-owned GPU allocation; requires a CUDA service image + NVIDIA Docker runtime.
+# execution_config = "gym/examples/resources.gpu.json"
 jobs_dir = ".agent-work/harbor-gym-deepseek"
 timeout_sec = 1800
 

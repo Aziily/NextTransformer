@@ -12,7 +12,14 @@ from .history import research_context
 def load(args):
     profiles = json.loads(args.profiles.read_text())
     backend = NativeBackend(
-        profiles, args.state, args.platform, server_id=getattr(args, "server_id", None)
+        profiles,
+        args.state,
+        args.platform,
+        server_id=getattr(args, "server_id", None),
+        python=getattr(args, "worker_python", None),
+        execution_config=json.loads(args.execution_config.read_text())
+        if getattr(args, "execution_config", None)
+        else None,
     )
     sources, history = research_context(args.platform)
     references = {
@@ -39,6 +46,14 @@ def main():
     parser.add_argument("--platform", type=Path, required=True)
     parser.add_argument(
         "--server-id", help="Operator-assigned local execution node identity"
+    )
+    parser.add_argument(
+        "--execution-config", type=Path, help="Operator GPU allocation JSON"
+    )
+    parser.add_argument(
+        "--worker-python",
+        type=Path,
+        help="Numerical worker Python with pinned dependencies",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     server = commands.add_parser("serve")
