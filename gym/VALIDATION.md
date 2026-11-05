@@ -5,6 +5,41 @@ PyTorch 2.9.1+cpu. Local tests used Python 3.12.15; container trials used
 Python 3.12.13. Native research workers use unprivileged user/mount/PID/network
 namespaces with no controller procfs mount. Runtime revisions bind the actual dependency and Python versions.
 
+## Live Cosmos / DeepSeek Flash / Claude Code trial
+
+A real provider trial on 2026-11-05 used Cosmos's advertised `deepseek-flash`
+model ID with native Harbor Claude Code 2.1.312 and the prepared MCP client image.
+Unlike the deterministic smoke below, the model autonomously read Gym resources,
+budget, published experiment history and architecture sources through MCP, then
+wrote native plugin packages and orchestrated experiments with `GymClient` from
+its container. No oracle script or model stub directed its choices.
+
+The model submitted two four-layer native block candidates with parallel and
+sequential layouts and trained each for eight updates. Their synthetic validation
+BPB values were 4.376051083992528 and 4.376077913286062 respectively. It selected
+the parallel candidate, passed all five final-fixture checks and froze a valid
+submission receipt. These tiny synthetic differences do not establish architecture
+quality or formal benchmark performance.
+
+Claude Code reported success after 178.368 seconds. Harbor reported no trial
+exception, independent verifier reward **1**, and zero tool-result errors in the
+native transcript. The training ledger consumed **756,568,941 of 1,000,000,000
+FLOPs**, leaving **243,431,059 available** and **zero reserved**. The run used one
+local CPU worker. It does not add GPU-container or production-data evidence.
+
+The configured Agent timeout was 900 seconds, with `max_turns=32` and a requested
+CLI USD limit of 3. Claude's terminal report recorded `num_turns=44`; both the
+requested setting and the native reported counter are retained in the local run
+report rather than treating the latter as an exact request cap. Claude reported
+USD 2.175823 with pricing basis `unknown`; this is not a verified Cosmos bill.
+The requested/reported model alias was `deepseek-flash`; the gateway's internal
+upstream route was not independently inspected.
+
+The retained local report is `.agent-work/cosmos-live/report.json`, alongside the
+native trajectory, runtime snapshot, signed Gym evidence and submission receipt.
+Candidate source/configuration and checkpoints remain in the trial's retained Gym
+volume. This run needed no implementation fix. The original checkout was untouched.
+
 ## HTTP, MCP and CUDA follow-up
 
 The final Gym suite passes **53 tests**. The repository suite passes **532 tests**,
@@ -154,8 +189,8 @@ targets were built with networking disabled. The ordinary networked dependency
 installation path is provided but was not the successful build path in this
 environment. Runtime revisions include the actual installed packages.
 
-No full 49.152B-token formal run, production GPU parity validation, live paid LLM
-call, upstream result publication or arbitrary-Python sandbox certification was
-performed. The repository's shared trainer, model shell, data pipeline, protocol,
+No full 49.152B-token formal run, production GPU parity validation, upstream
+result publication or arbitrary-Python sandbox certification was performed.
+The separately recorded Cosmos follow-up above adds a real provider trial. The repository's shared trainer, model shell, data pipeline, protocol,
 published results and Harbor dependency source were not modified. Production
 deployment gates are listed in [CONTRACT.md](CONTRACT.md).

@@ -137,7 +137,7 @@ GPU on that machine. Remote dispatch and parallel workers are outside this scope
 | Area | Current state | Required change |
 | --- | --- | --- |
 | Harbor task and sidecar | Native task layout, separate service/verifier and runtime collection exist | Retain this structure |
-| Agent | Native Harbor Claude Code default; custom broker/loop removed; model/budget examples supplied | Validate actual provider routing separately from the model-stub smoke |
+| Agent | Native Harbor Claude Code default; custom broker/loop removed; model/budget examples supplied; real Cosmos `deepseek-flash` fixture trial passed | Validate other providers and production-scale research separately |
 | Research environment | Agent-only internet access; Gym exposes published results, native model configurations and architecture reference code | Preserve provenance and owner-scoped private history; no Git access is required |
 | Execution resources | Local NVIDIA discovery, operator GPU allocation, memory limits, busy queues, cooperative leases and real CUDA workers; one node and one worker slot | Validate the chosen CUDA container/runtime; single-machine execution with one concurrent numerical job is the agreed scope |
 | Data | Parquet adapter uses native last-shard validation (06542) and permits training through 06541; shipped task still uses synthetic CPU fixtures | Supply and validate production ClimbMix/tokenizer manifests |
