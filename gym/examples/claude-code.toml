@@ -4,6 +4,7 @@ name = "claude-code"
 model = "opus"
 version = "2.1.312"
 max_turns = 64
+# Optional API cost limit. Remove this line to omit the limit.
 max_budget_usd = "5.00"
 
 [budget]

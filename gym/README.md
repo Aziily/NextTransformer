@@ -24,6 +24,10 @@ The launcher requires local images and records their immutable IDs.
 
 Set the provider credentials in the controller environment. Harbor passes them to Claude Code.
 The example sets the model, CLI version, time limit, turn limit and Agent USD limit.
+
+The Agent USD limit is optional. Omit `agent.max_budget_usd` to use no launcher-defined API cost limit.
+Set `--max-budget-usd` to override the configured limit. A specified limit must be finite and greater than zero.
+
 `budget.research_flops_limit` sets one research allocation for the whole session. Final training uses a separate allocation.
 
 ```sh

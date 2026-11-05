@@ -24,6 +24,10 @@ Gym 不需要 CUDA 容器镜像。部署时，用经过检查的 digest 固定 D
 
 在控制器环境中设置模型供应商凭据。Harbor 将凭据传给 Claude Code。
 示例配置指定模型、CLI 版本、时间上限、轮次上限和 Agent 美元费用上限。
+
+Agent 美元费用上限是可选项。不配置 `agent.max_budget_usd` 时，启动器不设置 API 费用上限。
+`--max-budget-usd` 可覆盖配置中的额度。显式设置的额度必须是大于零的有限数值。
+
 `budget.research_flops_limit` 是整个会话共用的研究 FLOPs 额度。最终训练使用独立额度。
 
 ```sh

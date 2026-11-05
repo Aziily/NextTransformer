@@ -6,12 +6,11 @@ Images must already exist locally. No implicit training authorization or builds.
 import argparse
 import json
 import os
-from pathlib import Path
 import subprocess
-import tomllib
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
-
+import tomllib
 from nexttransformer_gym.common import GymError
 from nexttransformer_gym.gpu import configuration, discover
 
@@ -47,7 +46,11 @@ def arguments():
     )
     parser.add_argument("--agent-version", default=agent.get("version", "2.1.312"))
     parser.add_argument("--max-turns", type=int, default=agent.get("max_turns", 64))
-    parser.add_argument("--max-budget-usd", default=agent.get("max_budget_usd", "5.00"))
+    parser.add_argument(
+        "--max-budget-usd",
+        default=agent.get("max_budget_usd"),
+        help="Optional Claude Code API cost limit in USD",
+    )
     parser.add_argument(
         "--timeout-sec", type=int, default=runtime.get("timeout_sec", 1800)
     )
@@ -67,12 +70,13 @@ def arguments():
         parser.error("A positive finite research FLOPs allocation is required")
     if args.max_turns <= 0 or args.timeout_sec <= 0:
         parser.error("Agent turn and time limits must be positive")
-    try:
-        amount = Decimal(str(args.max_budget_usd))
-        if not amount.is_finite() or amount <= 0:
-            raise ValueError
-    except (InvalidOperation, ValueError):
-        parser.error("Agent USD limit must be finite and positive")
+    if args.max_budget_usd is not None:
+        try:
+            amount = Decimal(str(args.max_budget_usd))
+            if not amount.is_finite() or amount <= 0:
+                raise ValueError
+        except (InvalidOperation, ValueError):
+            parser.error("Agent USD limit must be finite and positive")
     if args.agent == "claude-code" and not args.model:
         parser.error("Set --model or the configured model_env for Claude Code")
     roles = ("client", "verifier")
@@ -98,7 +102,8 @@ def agent_arguments(args):
             ("max_turns", args.max_turns),
             ("max_budget_usd", args.max_budget_usd),
         ):
-            command += ["--agent-kwarg", f"{name}={value}"]
+            if value is not None:
+                command += ["--agent-kwarg", f"{name}={value}"]
     return command
 
 

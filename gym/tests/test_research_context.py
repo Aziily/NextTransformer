@@ -3,11 +3,10 @@ import runpy
 import sys
 
 import pytest
-
 from nexttransformer_gym.common import GymError
 from nexttransformer_gym.history import research_context
-
-from test_gym import ROOT, run_job, context as make_context
+from test_gym import ROOT, run_job
+from test_gym import context as make_context
 
 
 @pytest.fixture(name="context")
@@ -106,6 +105,54 @@ def test_examples_use_native_claude_and_preserve_total_budget(monkeypatch, examp
     assert parsed.max_turns == 64 and parsed.max_budget_usd == "5.00"
     if example.startswith("deepseek"):
         assert args.model == "gateway-model-id"
+
+
+@pytest.mark.parametrize("usd_limit", [None, "1.25"])
+def test_launcher_optional_api_budget(monkeypatch, usd_limit):
+    from harbor.agents.installed.claude_code import ClaudeCodeOptions
+
+    runner = runpy.run_path(str(ROOT / "gym/run_trial.py"))
+    argv = [
+        "run_trial.py",
+        "--model",
+        "test-model",
+        "--research-flops-limit",
+        "1000000000000",
+        "--client-image",
+        "nt-gym-client:local",
+        "--verifier-image",
+        "nt-gym-verifier:local",
+    ]
+    if usd_limit is not None:
+        argv += ["--max-budget-usd", usd_limit]
+    monkeypatch.setattr(sys, "argv", argv)
+    args = runner["arguments"]()
+    native = runner["agent_arguments"](args)
+    options = dict(
+        native[i + 1].split("=", 1)
+        for i, item in enumerate(native)
+        if item == "--agent-kwarg"
+    )
+    assert args.research_flops_limit == 10**12
+    assert ("max_budget_usd" in options) == (usd_limit is not None)
+    assert ClaudeCodeOptions.model_validate(options).max_budget_usd == usd_limit
+
+
+@pytest.mark.parametrize("usd_limit", ["0", "-1", "nan", "inf", "invalid", ""])
+def test_launcher_rejects_invalid_api_budget(monkeypatch, usd_limit):
+    runner = runpy.run_path(str(ROOT / "gym/run_trial.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_trial.py",
+            "--config",
+            str(ROOT / "gym/examples/claude-code.toml"),
+            f"--max-budget-usd={usd_limit}",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        runner["arguments"]()
 
 
 def test_launcher_rejects_unbounded_budget_before_docker(monkeypatch):
