@@ -165,6 +165,12 @@ Gym instances sharing the same host/user lease directory; external host jobs sti
 need operator coordination. Memory limits combine conservative admission bounds
 and the PyTorch allocator cap; they are not a hardware partition.
 
+The default policy rejects cards with any compute or graphics process. An operator
+may explicitly set `allow_idle_graphics: true` for an allocated card: graphics
+processes may remain present, but zero observed GPU utilization, no compute process,
+sufficient free memory and the Gym lease are still required at dispatch. This is
+a shared-card policy, not exclusive ownership; the Agent cannot enable it.
+
 Use `run_trial.py` to provision host HTTP credentials and run the Harbor task.
 For later standalone `nt-gym` controller commands, pass the retained host state,
 profiles and platform paths, plus the same `--execution-config <operator.json>`

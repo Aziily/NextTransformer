@@ -33,6 +33,7 @@ def configuration(value=None):
                 "gpu_ids",
                 "gpu_memory_limit_bytes",
                 "max_concurrent_jobs",
+                "allow_idle_graphics",
             }
         ),
         "invalid_request",
@@ -68,11 +69,18 @@ def configuration(value=None):
         "invalid_request",
         "This backend supports exactly one concurrent job.",
     )
+    allow_graphics = value.get("allow_idle_graphics", False)
+    require(
+        type(allow_graphics) is bool,
+        "invalid_request",
+        "allow_idle_graphics must be an operator-supplied boolean.",
+    )
     return {
         "schema_version": "gym.execution.v1",
         "gpu_ids": ids,
         "gpu_memory_limit_bytes": memory,
         "max_concurrent_jobs": 1,
+        "allow_idle_graphics": allow_graphics,
     }
 
 
@@ -215,10 +223,13 @@ def allocated(config, observation):
 
 
 def idle(card, config):
+    graphics = card.get("graphics_process_count")
     return (
-        card.get("process_count") == 0
+        type(graphics) is int
+        and graphics >= 0
         and card.get("compute_process_count") == 0
-        and card.get("graphics_process_count") == 0
+        and card.get("process_count") == graphics
+        and (graphics == 0 or config.get("allow_idle_graphics", False))
         and card["utilization_percent"] == 0
         and card["memory_free_bytes"]
         >= config["gpu_memory_limit_bytes"] + 256 * 1024**2

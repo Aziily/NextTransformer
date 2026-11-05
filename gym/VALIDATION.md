@@ -5,6 +5,47 @@ PyTorch 2.9.1+cpu. Local tests used Python 3.12.15; container trials used
 Python 3.12.13. Native research workers use unprivileged user/mount/PID/network
 namespaces with no controller procfs mount. Runtime revisions bind the actual dependency and Python versions.
 
+## Live Cosmos + host Gym + allocated GPU follow-up
+
+The combined real-provider/GPU trial passed on 2026-11-05. Cosmos's requested
+`deepseek-flash` model drove native Harbor Claude Code 2.1.312, while Gym ran on
+the host and executed numerical work on the sole operator-authorized
+A100-SXM4-80GB card. The Agent container received no GPU device or training code.
+No model stub or oracle chose the candidate or issued the research commands.
+
+For this bounded check, the operator explicitly enabled `allow_idle_graphics`
+on that one card, which retained two graphics processes. Dispatch still required
+zero observed utilization, no compute processes, sufficient free memory and the
+Gym lease. Default deployments continue to reject any existing graphics process.
+The test used a 1 GiB PyTorch allocator allowance, a two-update experiment horizon,
+one concurrent worker and a total research allocation of 300,000,000 FLOPs.
+No existing process was stopped.
+
+The model wrote a gated convolutional FFN candidate and a plain FFN control, both
+with two layers, and trained each for two updates. It selected the control using
+synthetic validation feedback, passed final-fixture checks and froze a submission.
+Five numerical jobs succeeded: two training jobs (four optimizer updates total)
+and three validation jobs. Every result records the allocated physical GPU UUID,
+`model_parameter_devices=["cuda:0"]`, PyTorch 2.9.1+cu128 and CUDA runtime 12.8.
+The isolated worker's logical device zero maps to the authorized host card.
+Peak PyTorch allocated memory was **18,220,032 bytes**; this does not include all
+CUDA driver/context memory. The ledger spent **181,123,033 FLOPs**, with
+**118,876,967 available** and **zero reserved** afterward.
+
+Claude Code reported success in 238.869 seconds; total Harbor runtime was about
+4 minutes 40 seconds. Harbor recorded no exception, independent verifier reward
+**1**, and zero tool-result errors. MCP supplied discovery, history, resource,
+cost/job/result queries and finalization; Bash scripts used the HTTP SDK for
+candidate upload and numerical dispatch. The CLI-reported USD 1.99913 remains an
+unverified estimate with pricing basis `unknown`.
+
+The retained local report is `.agent-work/cosmos-host-gpu/report.json`, with
+native trajectory, signed evidence, runtime snapshot, submission receipt and
+host-retained candidate/checkpoint state. This closes the earlier combined-trial
+gap below. It validates the real GPU integration, not production ClimbMix or
+CORE-22 performance. The updated Gym suite passes **70 tests**; the repository
+suite again passes **532 tests**, with 131 skipped and one existing warning.
+
 ## Host Gym deployment follow-up
 
 Gym now runs on the host by default. Harbor still runs its native Agent and the

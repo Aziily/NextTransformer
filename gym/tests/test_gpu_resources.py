@@ -56,12 +56,31 @@ def config(ids=None):
         {"gpu_memory_limit_bytes": 0},
         {"gpu_memory_limit_bytes": True},
         {"max_concurrent_jobs": 2},
+        {"allow_idle_graphics": "true"},
         {"command": "nvidia-smi"},
     ],
 )
 def test_execution_config_rejects_unbounded_or_invalid_allocations(override):
     with pytest.raises(GymError):
         gpu.configuration({**config(), **override})
+
+
+def test_operator_can_allow_idle_graphics_but_not_active_or_compute_work(observed):
+    device = observed[0]
+    device.update(graphics_process_count=2, process_count=2)
+    assert not gpu.idle(device, gpu.configuration(config()))
+    policy = gpu.configuration({**config(), "allow_idle_graphics": True})
+    assert gpu.idle(device, policy)
+    with gpu.reserve(policy, GPU_A) as lease:
+        assert lease["id"] == GPU_A
+    for change in (
+        {"utilization_percent": 1},
+        {"compute_process_count": 1, "process_count": 3},
+        {"process_count": 3},
+        {"graphics_process_count": None},
+        {"memory_free_bytes": 1},
+    ):
+        assert not gpu.idle({**device, **change}, policy)
 
 
 def test_gpu_lease_rechecks_occupancy_and_releases_after_exception(observed):

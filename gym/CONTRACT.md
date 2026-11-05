@@ -174,7 +174,12 @@ Gym processes sharing the host lease directory, not unrelated host applications
 or different container lease filesystems. Operators must allocate dedicated cards
 across those boundaries. The GPU memory policy uses conservative quote admission
 and the PyTorch allocator fraction, not a hardware memory partition or a guarantee
-against arbitrary direct CUDA allocations. Results record measured parameter
+against arbitrary direct CUDA allocations. By default, any compute or graphics
+process blocks dispatch. Operator-only `allow_idle_graphics=true` permits existing
+graphics processes when observed utilization is zero, compute-process count is
+zero, and memory/lease checks pass. Unknown or mixed process observations still
+block dispatch. This opt-in policy does not reserve the GPU against unrelated
+applications or guarantee their future inactivity. Results record measured parameter
 devices, runtime versions and peak memory. The agreed execution scope is one
 local machine and one concurrent numerical job. Remote nodes and parallel
 workers are outside scope. Host GPU execution uses an operator-selected CUDA
