@@ -17,7 +17,10 @@ from .common import GymError, canonical, identity, new_id, require, file_hash
 
 
 class NativeBackend:
-    def __init__(self, profiles, state_dir, platform_root, python=None):
+    def __init__(self, profiles, state_dir, platform_root, python=None, server_id=None):
+        from .resources import local_server_id
+
+        self.server_id = server_id or local_server_id()
         self.profiles = profiles
         self.state_dir, self.platform_root = (
             Path(state_dir).resolve(),
@@ -281,7 +284,9 @@ class Scheduler:
                     for _, raw in rows
                 ):
                     return False
-                job.update(state="running", lease=new_id())
+                job.update(
+                    state="running", lease=new_id(), server_id=self.backend.server_id
+                )
                 self.store.update(db, sid, "job", job)
                 quote = self.store.get(db, sid, "quote", job["quote_id"])
                 if quote["checkpoint_id"]:

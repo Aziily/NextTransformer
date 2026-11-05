@@ -33,6 +33,8 @@ READS = {
     "get_result",
     "get_budget",
     "get_submission",
+    "list_experiments",
+    "read_experiment",
 }
 PARAMETERS = {
     "describe_space": set(),
@@ -61,14 +63,17 @@ PARAMETERS = {
     "get_budget": set(),
     "finalize": {"candidate_id", "profile_id"},
     "get_submission": {"submission_id"},
+    "list_experiments": {"scope", "cursor", "limit"},
+    "read_experiment": {"scope", "experiment_id"},
 }
 REQUIRED_CHECKS = {"construction", "numerical", "causal", "checkpoint", "cost_coverage"}
 
 
 class Service:
-    def __init__(self, database, backend, catalog=None):
+    def __init__(self, database, backend, catalog=None, history=None):
         self.store, self.backend = Store(database), backend
         self.catalog = catalog or {}
+        self.history = history or {}
 
     def create_session(self, research_flops_limit, trial_id, max_concurrent=1):
         integer(research_flops_limit, 1)
@@ -341,10 +346,28 @@ class Service:
                 "runtime_revision": self.backend.revision,
             }
         if op == "get_resources":
+            from .resources import observe
+
             session = self.session(db, sid)
             jobs = s.all(db, sid, "job")
             running = sum(
                 j["state"] in {"running", "cancelling", "reconciliation"} for j in jobs
+            )
+            if p.get("resource_profile_id") is not None:
+                require(
+                    any(
+                        x["resource_profile_id"] == p["resource_profile_id"]
+                        for x in self.backend.profiles.values()
+                    ),
+                    "not_found",
+                    "Unknown resource profile.",
+                )
+            global_busy = any(
+                json.loads(raw)["state"] in {"running", "cancelling", "reconciliation"}
+                for (raw,) in db.execute("SELECT value FROM objects WHERE kind='job'")
+            )
+            server = observe(
+                self.backend.server_id, self.backend.profiles.values(), global_busy
             )
             return {
                 "schema_version": "gym.resources.v1",
@@ -356,14 +379,80 @@ class Service:
                 },
                 "own_running": running,
                 "own_queued": sum(j["state"] == "queued" for j in jobs),
-                "allocatable_slots": max(0, session["max_concurrent"] - running),
+                "allocatable_slots": min(
+                    server["allocatable_slots"],
+                    max(0, session["max_concurrent"] - running),
+                ),
+                "server_count": 1,
+                "reachable_server_count": 1,
+                "servers": [server],
                 "throughput": None,
                 "throughput_reason": "not_measured",
             }
         if op == "list_components":
+            from .history import page
+
+            return page(
+                [{"id": k, "reference_id": k} for k in self.catalog],
+                p.get("cursor", ""),
+                p.get("limit", 50),
+            )
+        if op in {"list_experiments", "read_experiment"}:
+            from .history import page, summary
+
+            scope = p.get("scope", "published")
+            require(
+                scope in {"published", "session"},
+                "invalid_request",
+                "Choose published or session history.",
+            )
+            if scope == "published":
+                if op == "list_experiments":
+                    return page(
+                        [summary(x) for x in self.history.values()],
+                        p.get("cursor", ""),
+                        p.get("limit", 50),
+                    )
+                require(
+                    p.get("experiment_id") in self.history,
+                    "not_found",
+                    "Unknown published experiment.",
+                )
+                return self.history[p["experiment_id"]]
+            jobs = [j for j in s.all(db, sid, "job") if j.get("quote_id")]
+            if op == "list_experiments":
+                return page(
+                    [
+                        {
+                            "id": j["id"],
+                            "scope": "session",
+                            "status": j["state"],
+                            "operation": j["operation"],
+                        }
+                        for j in jobs
+                    ],
+                    p.get("cursor", ""),
+                    p.get("limit", 50),
+                )
+            job = s.get(db, sid, "job", p.get("experiment_id"))
+            require(
+                job.get("quote_id") is not None,
+                "not_found",
+                "Job has no numerical experiment.",
+            )
+            quote = s.get(db, sid, "quote", job["quote_id"])
+            candidate = s.get(db, sid, "candidate", quote["candidate_id"])
             return {
-                "items": [{"id": k, "reference_id": k} for k in sorted(self.catalog)],
-                "next_cursor": None,
+                "id": job["id"],
+                "scope": "session",
+                "status": job["state"],
+                "candidate": candidate,
+                "files": s.get(db, sid, "package", candidate["id"])["files"],
+                "profile_id": quote["profile_id"],
+                "server_id": job.get("server_id"),
+                "result": s.get(db, sid, "result", job["id"])
+                if job["state"] == "succeeded"
+                else None,
             }
         if op == "read_reference":
             require(

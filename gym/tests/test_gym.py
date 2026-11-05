@@ -416,26 +416,13 @@ def test_unknown_parameters_are_not_silently_accepted(context):
         context[2]("get_budget", command="anything")
 
 
-def test_mediated_agent_cannot_execute_code(tmp_path):
-    from nexttransformer_gym.agent_loop import dispatch
-
-    for action in (
-        {"action": "shell", "command": "touch marker"},
-        {"action": "python", "code": "1+1"},
-        {"action": "note", "text": "hello", "path": "/outside"},
-    ):
-        with pytest.raises(GymError):
-            dispatch(None, {}, action, tmp_path)
-    assert not (tmp_path / "marker").exists()
-
-
 def test_trial_receipt_never_persists_provider_credentials(monkeypatch, tmp_path):
     import subprocess
     import sys
     from types import SimpleNamespace
 
     runner = runpy.run_path(str(ROOT / "gym/run_trial.py"))
-    monkeypatch.setenv("GYM_MODEL_API_KEY", "test-provider-secret-never-persist")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-provider-secret-never-persist")
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -448,6 +435,8 @@ def test_trial_receipt_never_persists_provider_credentials(monkeypatch, tmp_path
         "argv",
         [
             "run_trial.py",
+            "--agent",
+            "oracle",
             "--research-flops-limit",
             "1000",
             "--jobs-dir",
@@ -464,7 +453,7 @@ def test_trial_receipt_never_persists_provider_credentials(monkeypatch, tmp_path
         runner["main"]()
     assert exit_status.value.code == 1
     receipt = next(tmp_path.glob("*.binding.json")).read_text()
-    assert "GYM_MODEL_API_KEY" not in receipt and "test-provider-secret" not in receipt
+    assert "ANTHROPIC_API_KEY" not in receipt and "test-provider-secret" not in receipt
 
 
 def test_rank_adapter_rendezvous_and_meter_on_cpu(tmp_path):

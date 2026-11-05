@@ -1,9 +1,12 @@
 ARG BASE_IMAGE=python:3.12.13-slim-bookworm
 ARG WORKER_BASE_IMAGE=${BASE_IMAGE}
-FROM ${BASE_IMAGE} AS client
-RUN useradd --create-home --uid 1000 agent && mkdir -p /workspace /run/gym-runtime && chown agent:agent /workspace
+ARG NODE_IMAGE=node:20-bookworm
+FROM ${BASE_IMAGE} AS client-python
+FROM ${NODE_IMAGE} AS client
+COPY --from=client-python /usr/local/ /usr/local/
+RUN ldconfig && useradd --create-home --uid 1001 agent && mkdir -p /workspace /run/gym-runtime && chown agent:agent /workspace
 ENV PYTHONPATH=/opt/client PYTHONDONTWRITEBYTECODE=1
-COPY gym/src/nexttransformer_gym/__init__.py gym/src/nexttransformer_gym/client.py gym/src/nexttransformer_gym/common.py gym/src/nexttransformer_gym/agent_loop.py /opt/client/nexttransformer_gym/
+COPY gym/src/nexttransformer_gym/__init__.py gym/src/nexttransformer_gym/client.py gym/src/nexttransformer_gym/common.py /opt/client/nexttransformer_gym/
 COPY gym/examples/make_candidate.py gym/tasks/architecture-research/environment/runtime_snapshot.py /opt/gym/
 WORKDIR /workspace
 USER agent
@@ -16,6 +19,9 @@ RUN if [ "$INSTALL_WORKER_DEPS" = "1" ]; then pip install --no-cache-dir numpy==
 ENV PYTHONPATH=/opt/gym/src:/opt/platform PYTHONDONTWRITEBYTECODE=1 NANOCHAT_DTYPE=float32 TORCHDYNAMO_DISABLE=1
 COPY nexttransformer /opt/platform/nexttransformer
 COPY nanochat /opt/platform/nanochat
+COPY results/runs /opt/platform/results/runs
+COPY results/methods /opt/platform/results/methods
+COPY configs /opt/platform/configs
 COPY gym/src /opt/gym/src
 COPY gym/examples/profiles.fixture.json /opt/gym/profiles.json
 COPY gym/tasks/architecture-research/environment/entrypoint.sh /opt/gym/entrypoint.sh

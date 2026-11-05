@@ -18,10 +18,11 @@ results or the existing official protocol.
   default. Select the model and provider authentication through Harbor's native
   configuration. Do not add a Gym model broker, custom Agent subclass or separate
   reasoning loop. The oracle is an explicitly selected bounded test only.
-- The Agent develops native plugins in its own container, with the task
-  repository's complete Git history and outbound internet access for research.
+- The Agent develops native plugins in its own container, with research information
+  supplied by Gym and outbound internet access for research.
   A closed container means filesystem/process isolation, not an offline network.
-  Give it a task checkout, not a writable mount of the operator's repository.
+  It needs no repository checkout or Git history. Gym exposes past experiments,
+  results, model configurations and read-only architecture reference code.
 - A separate Gym sidecar runs this repository's training and evaluation service.
   The Agent uses its HTTP SDK; the SDK imports no training code. The sidecar owns
   datasets, checkpoints, budgets and final training. Its private state and the
@@ -49,7 +50,8 @@ architecture and plugin options, but cannot override the experimental protocol.
 Do not expose CORE-22 data, per-candidate results or a test-evaluation operation
 through the research environment/API. Final ranking uses only the agreed CORE-22
 aggregate after fresh final training. Training/validation metrics remain
-diagnostics. CORE-22 is public: with web access and full repository history, this
+diagnostics. Published historical CORE results may be used as research context.
+CORE-22 is public: with web access and published experimental history, this
 is an evaluation-access and feedback boundary, not a claim that its contents
 have never been seen by the Agent.
 
@@ -102,6 +104,7 @@ with the bearer token. The Python `GymClient` wraps this transport only.
 | Purpose | Operations |
 | --- | --- |
 | Discover capabilities and limits | `describe_space`, `list_components`, `read_reference`, `get_resources` |
+| Read historical experiments and architectures | `list_experiments`, `read_experiment` |
 | Upload candidate source | `submit_candidate` |
 | Check loading, correctness and cost | `validate_candidate`, `calibrate_candidate`, `debug_candidate`, `inspect_cost` |
 | Price work and inspect allocation | `quote_experiment`, `get_budget` |
@@ -122,15 +125,16 @@ limits. Do not describe this ledger as metering every computation by the Agent.
 | Area | Current state | Required change |
 | --- | --- | --- |
 | Harbor task and sidecar | Native task layout, separate service/verifier and runtime collection exist | Retain this structure |
-| Agent | Launcher defaults to the oracle; optional custom `GymResearchAgent` exists | Remove the custom broker/loop and make native Claude Code the default; verify its installation, credentials and trajectory collection |
-| Research environment | Internal-only network; SDK and selected references, no Git checkout | Provide complete repository history and Agent-only internet access while retaining worker/state isolation |
+| Agent | Native Harbor Claude Code default; custom broker/loop removed; model/budget examples supplied | Validate actual provider routing separately from the model-stub smoke |
+| Research environment | Agent-only internet access; Gym exposes published results, native model configurations and architecture reference code | Preserve provenance and owner-scoped private history; no Git access is required |
+| Execution resources | Gym observes its local CPU/memory limits and reports one server with one global worker slot; jobs record server identity | Remote and GPU research adapters remain deployment work; do not infer usable servers from declared counts |
 | Data | Parquet adapter uses native last-shard validation (06542) and permits training through 06541; shipped task still uses synthetic CPU fixtures | Supply and validate production ClimbMix/tokenizer manifests |
 | Candidate/API | Native source packages, HTTP SDK, checks, jobs, continuation and budget ledger exist | Keep native interfaces; finish production execution and accounting validation |
 | Final artifact | Candidate source/configuration live in durable Gym state; Harbor collects a `submission.json` receipt; final dispatch resolves retained code | Retain the agreed ID-based delivery and per-trial service state |
 | Final execution | Separate final dispatch and a native formal adapter exist; full GPU training is unverified | Wire post-acceptance dispatch and validate the new cohort's final training and CORE-22-only scoring |
 
-Acceptance requires a native Claude Code trial with Git-history access, internet
-research, bounded Gym experiments, submission receipt verification and retained real
+Acceptance requires a native Claude Code trial with Gym research-history access,
+bounded Gym experiments, submission receipt verification and retained real
 runtime artifacts. Production acceptance additionally requires dataset, GPU,
 budget/accounting and final-evaluation checks. Existing CPU oracle results do not
 establish those capabilities.

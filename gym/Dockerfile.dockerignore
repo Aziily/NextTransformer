@@ -3,6 +3,13 @@
 !nexttransformer/**
 !nanochat
 !nanochat/**
+!results
+!results/runs
+!results/runs/**
+!results/methods
+!results/methods/**
+!configs
+!configs/**
 !gym
 !gym/src
 !gym/src/**

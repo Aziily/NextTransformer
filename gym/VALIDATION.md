@@ -5,6 +5,41 @@ PyTorch 2.9.1+cpu. Local tests used Python 3.12.15; container trials used
 Python 3.12.13. Native research workers use unprivileged user/mount/PID/network
 namespaces with no controller procfs mount. Runtime revisions bind the actual dependency and Python versions.
 
+## Native Claude Code and research-context follow-up
+
+The current Gym suite passes **33 tests**; the repository suite passes **532 tests**
+with 131 skipped and one existing tensor conversion warning. Added checks cover
+published history pagination, model cards and model/config provenance, exact source
+references, session isolation, actual execution-node recording, cross-session
+worker availability, native Claude Code options and explicit example budgets.
+Both example configurations pass a dry run without creating containers or calling
+a provider. Ruff formatting and undefined/unused-name checks pass.
+
+The native Harbor **Claude Code 2.1.312** smoke completed with no trial exception
+and verifier reward **1**. A deterministic local Anthropic Messages stub drove
+one real Bash tool call through Claude Code. The tool read historical research
+context and local resources, trained two candidates, continued a checkpoint,
+validated the final choice and wrote the submission receipt. Harbor retained the
+native trajectory, actual container runtime snapshot and signed Gym evidence.
+Two stub model requests were made, with **zero external model calls**. The initial
+run consumed 91,610,516 of its 1,000,000,000,000 research FLOPs, with zero reserved
+FLOPs at verification. Published context contains 35 runs and 21 source references;
+five historical methods have model cards but no configuration in the current tree.
+
+Client/service/verifier images were built from locally available bases. The client
+combines the Python runtime with the Node Bookworm base's CLI dependencies. For
+this smoke, the already-installed pinned Claude executable was copied into a
+separate client image; no host credentials were copied. This tests native CLI
+execution, not the network installer or a real DeepSeek/gateway connection. The
+service used the prepared CPU dependency base described below. No remote training
+server or GPU research capacity is claimed: the observed backend is one local
+server with one worker slot. The local model stub persists and reuses its port.
+
+Reproduce with `python gym/smoke.py --client-image <prepared-client-image>`;
+the normal client image lets Harbor install the pinned CLI instead.
+
+## Earlier native-plugin baseline
+
 | Check | Observed result |
 | --- | --- |
 | Repository test suite, with two xdist workers | 531 passed, 131 skipped; one existing tensor conversion warning |
@@ -43,7 +78,7 @@ The Gym tests cover exact checkpoint continuation, native loss/gradient/cost and
 packing parity, direct native model loading and serialized-config parity, atomic concurrent budget use,
 idempotency, cross-session denial, stale quotes, checkpoint modification/removal,
 queued/running cancellation, conservative crash recovery, signed evidence,
-separate final dispatch, stable host ports, mediated action rejection, provider
+separate final dispatch, stable host ports, native Claude configuration, provider
 credential exclusion, original source bytes (including CRLF), worker filesystem/network
 isolation, and the actual Harbor task schema. The distributed adapter
 test uses a two-rank Gloo CPU protocol probe to exercise file rendezvous and budget

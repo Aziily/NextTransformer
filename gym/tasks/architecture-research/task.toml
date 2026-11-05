@@ -15,7 +15,7 @@ service = "gym"
 
 [task]
 name = "nexttransformer/architecture-research"
-description = "Offline architecture research through the Gym API with separate submission verification"
+description = "Architecture auto-research through the Gym API with native Claude Code and separate submission verification"
 
 [metadata]
 cohort = "bounded-integration-fixture"
@@ -28,7 +28,7 @@ user = "agent"
 [environment]
 docker_image = "${GYM_CLIENT_IMAGE}"
 cpus = 1
-memory_mb = 512
+memory_mb = 2048
 storage_mb = 1024
 
 [environment.env]
@@ -38,6 +38,7 @@ GYM_RESEARCH_FLOPS_LIMIT = "${GYM_RESEARCH_FLOPS_LIMIT}"
 GYM_TRIAL_ID = "${GYM_TRIAL_ID}"
 GYM_STATE_VOLUME = "${GYM_STATE_VOLUME}"
 GYM_VERIFIER_VOLUME = "${GYM_VERIFIER_VOLUME}"
+GYM_SERVER_ID = "${GYM_SERVER_ID}"
 
 [verifier]
 timeout_sec = 60.0

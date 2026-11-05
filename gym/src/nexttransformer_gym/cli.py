@@ -6,11 +6,15 @@ from pathlib import Path
 from .backend import NativeBackend
 from .service import Service
 from .server import atomic_json, serve
+from .history import research_context
 
 
 def load(args):
     profiles = json.loads(args.profiles.read_text())
-    backend = NativeBackend(profiles, args.state, args.platform)
+    backend = NativeBackend(
+        profiles, args.state, args.platform, server_id=getattr(args, "server_id", None)
+    )
+    sources, history = research_context(args.platform)
     references = {
         "native-plugin": "Use native method.json and ModelConfig architecture fields. Define mixer, ffn, block or a ReferenceLM model subclass. Local Python modules are supported.",
         "final-separation": "Finalization freezes one architecture. Verification does not launch training or award a performance score.",
@@ -23,7 +27,9 @@ def load(args):
         source = (args.platform / relative).read_text()
         if len(source.encode()) <= 65536:
             references[key] = source
-    return Service(args.state / "gym.sqlite3", backend, references)
+    return Service(
+        args.state / "gym.sqlite3", backend, {**sources, **references}, history
+    )
 
 
 def main():
@@ -31,6 +37,9 @@ def main():
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--profiles", type=Path, required=True)
     parser.add_argument("--platform", type=Path, required=True)
+    parser.add_argument(
+        "--server-id", help="Operator-assigned local execution node identity"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     server = commands.add_parser("serve")
     server.add_argument("--container-port", type=int)

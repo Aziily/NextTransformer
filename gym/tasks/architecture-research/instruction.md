@@ -9,6 +9,17 @@ and `list_components` before starting. Candidate packages must follow the
 `proposal.json`, `architecture.json`, `plugin/<method>/method.json` and
 `plugin/<method>/__init__.py` contract. Use `/opt/gym/make_candidate.py` as an example.
 
+Use `list_experiments(scope="published")` and `read_experiment` to inspect past
+experiments, their results and model configurations. Follow `source_reference_ids`
+with `read_reference` for architecture code. These are published historical
+results and current reference files; check provenance before assuming a source
+file is identical to the historical run. `scope="session"` shows your own research
+jobs, results and candidate source. No repository checkout or Git history is needed.
+`get_resources` reports the actual local execution node and worker availability.
+Use `get_budget` and `quote_experiment`: the finite allocation covers all of this
+session's Gym numerical work, including checks. CORE-22 testing for your candidates
+is unavailable during research. You may use internet research from this container.
+
 Use the existing NextTransformer plugin structure: native `method.json`,
 `__init__.py`, and optional local Python modules. Define native `model`, `mixer`,
 `ffn` or `block` hooks; `model` subclasses `ReferenceLM`. `architecture.json`

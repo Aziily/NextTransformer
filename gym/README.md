@@ -6,7 +6,7 @@ code are unchanged. Read [CONTRACT.md](CONTRACT.md) for the supported source lan
 accounting rules, trust boundaries and production release gates.
 See [VALIDATION.md](VALIDATION.md) for executed checks and their limits.
 See [ROADMAP.md](ROADMAP.md) for the revised auto-research target: native Harbor
-Claude Code, repository history and internet access, three dataset splits, and a
+Claude Code, research history through Gym and Agent internet access, three dataset splits, and a
 submission ID backed by source/configuration retained in Gym. Its status table
 separates planned changes from the current fixture described below.
 
@@ -54,7 +54,7 @@ need their own pinned, reviewed dependencies and compatibility evidence.
 
 ## Native Harbor trial
 
-Build each target from the repository root. Pin `BASE_IMAGE` to a reviewed digest
+Build each target from the repository root. Pin `BASE_IMAGE` and `NODE_IMAGE` to reviewed digests
 when preparing a cohort; the run helper resolves all three built images to immutable
 local image IDs and never implicitly pulls them.
 
@@ -63,19 +63,49 @@ docker build -f gym/Dockerfile --target service -t nt-gym-service:local .
 docker build -f gym/Dockerfile --target client -t nt-gym-client:local .
 docker build -f gym/Dockerfile --target verifier -t nt-gym-verifier:local .
 
-uv run --project gym --extra worker python gym/run_trial.py \
-  --research-flops-limit 1000000000000 \
-  --jobs-dir .agent-work/harbor-gym \
-  --client-image nt-gym-client:local \
-  --service-image nt-gym-service:local \
-  --verifier-image nt-gym-verifier:local
+uv run --project gym python gym/run_trial.py --config gym/examples/claude-code.toml --dry-run
+# Supply provider authentication through Harbor's native controller environment.
+uv run --project gym python gym/run_trial.py --config gym/examples/claude-code.toml
 ```
 
-The numerical cap above is an explicit **fixture example**, not a production default.
-Omitting the allocation refuses launch. The oracle submits two native model configurations,
-trains them through the API, continues one checkpoint, validates the final choice,
-and writes a receipt. Harbor collects actual main-container runtime state and
-signed Gym evidence, then starts the separate verifier.
+The default Agent is Harbor's built-in **Claude Code**, pinned to CLI 2.1.312 in
+the examples. Harbor installs and runs it; Gym has no Agent subclass, model broker
+or reasoning loop. The Agent can use its shell and internet tools, while numerical
+workers remain offline. No repository or Git checkout is mounted into the Agent.
+
+Both examples set the **whole session's research FLOPs allocation**, plus Agent
+turn/time limits and Claude Code's separate USD option. The example 10^12 FLOPs
+cap is for the CPU fixture, not a production allocation. Numerical checks and all
+research experiments share the same durable account. Final training has a separate
+allocation; model inference and local shell CPU do not consume the Gym FLOPs ledger.
+No retries or extra attempts silently create another research allocation.
+
+For the requested DeepSeek V4.1 Flash setup, use
+`gym/examples/deepseek-v4.1-flash.toml`. Set `GYM_RESEARCH_MODEL` to your provider's
+actual model ID and configure `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` in the
+controller environment. The endpoint must support **Anthropic Messages**; an
+OpenAI-only chat-completions endpoint does not work directly with Claude Code.
+The example does not assert that a particular provider offers that model ID.
+Provider credentials are handled by native Harbor/Claude Code inside the Agent
+container; they are not written into the trial binding receipt or Gym service.
+For custom gateways, the CLI USD limit depends on its reported usage/pricing;
+use provider-side limits when a strict billing cap is required.
+
+Model-free smoke with the actual native Claude Code CLI and a local deterministic
+Anthropic stub (no external model calls):
+
+```sh
+uv run --project gym python gym/smoke.py
+```
+
+The stub asks Claude Code to execute the bounded Gym workflow through its real
+Bash tool: historical context and resources, two candidates, checkpoint continuation,
+final checks and a submission receipt. This is integration coverage, not an AI
+architecture-search quality measurement. A prepared client image with the pinned
+CLI can be selected using `--client-image`; otherwise Harbor installs the CLI.
+For a simpler test without Claude Code, explicitly pass `--agent oracle` to
+`run_trial.py` with either example configuration. Harbor collects runtime state
+and signed Gym evidence before starting the separate verifier.
 
 The run helper creates uniquely labelled state/verifier volumes and records their
 names alongside Harbor job output. Those volumes intentionally survive task cleanup,
@@ -88,14 +118,30 @@ No host listener is published by Compose; its private service port is not a host
 port allocation. The optional host HTTP server binds port 0 once, retains the
 socket, persists its chosen port and fails explicitly if that port is occupied.
 
-For a mediated LLM researcher, select
-`--agent nexttransformer_gym.harbor_agent:GymResearchAgent` and explicitly configure
-`GYM_MODEL_ENDPOINT` (fixed HTTPS chat-completion endpoint), `GYM_MODEL_NAME`, and
-`GYM_MODEL_API_KEY` on the controller. Provider credentials stay outside the
-container. The Agent receives only JSON research actions, not a shell tool.
-Model calls are not part of the default oracle/test run; inference cost metering
-remains deferred. Generic Harbor agents can use the same API but do not inherit
-this restricted tool policy automatically.
+## Research information and execution resources
+
+`list_experiments(scope="published")` lists repository-published historical runs;
+`read_experiment(experiment_id=...)` returns results, model cards/structure descriptions, model configuration and
+reference IDs for architecture source. `read_reference` reads only catalogued
+files, and `list_components` paginates the catalog. Current source/configuration
+is labelled separately from historical run provenance, including whether a
+recorded model hash matches. Runs whose code is absent still have their published
+model card and an explicit missing configuration. Missing historical source is not silently claimed
+to be the exact code from that run. Published historical CORE scores are context;
+new candidates cannot access CORE-22 evaluation during research.
+
+`scope="session"` returns the current session's numerical jobs, results and source
+packages. Other sessions' private results are inaccessible. The Agent has no need
+for filesystem or Git access to the repository.
+
+`get_resources` observes the actual local backend: server identity, CPU capacity,
+memory limit, configured CUDA devices, supported research devices and the global
+worker slot. Jobs record their execution server. `--server-id` supplies a stable
+operator name; otherwise the launcher derives an ID from the local host. Training
+subprocesses execute on the same node as Gym. The shipped backend reports **one
+local server**, not a discovered remote cluster; GPU research and remote dispatch
+require additional deployment adapters. Uncertain work in any session retains
+the shared slot until reconciled.
 
 ## Native plugin compatibility
 
@@ -172,5 +218,5 @@ reported as a scientific measurement. Full GPU execution remains a deployment ch
 The initial resource pool has one worker slot. Candidate and checkpoint quotas are
 checked before dispatch; checkpoints remain pinned until explicit retention cleanup.
 The code does not yet automate multi-node provisioning or checkpoint garbage
-collection. Production image/hardware, offline-policy and full-run acceptance must
+collection. Production image/hardware, worker isolation and full-run acceptance must
 be validated for the selected deployment; bounded CPU fixtures do not establish them.

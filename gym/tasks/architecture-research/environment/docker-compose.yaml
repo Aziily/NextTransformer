@@ -8,13 +8,16 @@ services:
     depends_on:
       gym:
         condition: service_healthy
-    networks: [research]
+    networks: [research, agent-egress]
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - agent-auth:/run/gym-auth:ro
     cap_drop: [ALL]
+    # Harbor installs user-owned CLI configuration and collects Agent logs as root.
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
     security_opt: ["no-new-privileges:true"]
     cpus: 1
-    mem_limit: 512m
+    mem_limit: 2g
     pids_limit: 128
 
   gym:
@@ -24,6 +27,7 @@ services:
     environment:
       GYM_RESEARCH_FLOPS_LIMIT: ${GYM_RESEARCH_FLOPS_LIMIT:?Explicit allocation required}
       GYM_TRIAL_ID: ${GYM_TRIAL_ID:?Unique trial binding required}
+      GYM_SERVER_ID: ${GYM_SERVER_ID:?Local execution node identity required}
     networks: [research]
     read_only: true
     tmpfs: [/tmp]
@@ -49,6 +53,7 @@ services:
     stop_grace_period: 15s
 
 networks:
+  agent-egress: {}
   research:
     internal: true
 

@@ -4,7 +4,8 @@ The design authority is `../docs/design/gym-design-interface.md`. Harbor 0.24.0
 and task schema 1.4 are pinned. This document describes the implementation's
 supported subset and release gates, not a change to the scientific protocol.
 The revised [auto-research roadmap](ROADMAP.md) records the newer target and its
-remaining gaps, including native Claude Code and network/history access. The data
+remaining production gates. Native Harbor Claude Code is the default; research
+history is exposed through Gym rather than a repository checkout. The data
 adapter now follows native last-shard validation, and ID-based final delivery is
 retained as agreed. Research validation access supersedes the original proposal's
 separate dev-shard policy for this Gym task only.
@@ -71,6 +72,14 @@ cannot be rebound to different content. Unknown parameters are rejected.
 Candidate/event pagination uses stable cursors. Calibration is a completed
 static-analysis job returning derived immutable candidates and cost reports.
 
+`list_experiments` and `read_experiment` expose published historical runs or the
+current session's numerical experiments. Published results include corresponding
+current model configurations, hash-match status and architecture source reference
+IDs. They explicitly distinguish present reference code from historical source.
+They do not expose test datasets or an evaluation API for new candidates. Private
+session history remains owner-scoped. The reference catalog is a bounded allowlist,
+not a filesystem or Git access API.
+
 Quotes bind source, profile, runtime revision, checkpoint, resource profile and
 absolute target update. A quote expires after five minutes and is consumed once.
 Reservations and jobs commit in one SQLite transaction. FLOPs amounts cross the
@@ -124,17 +133,26 @@ platform source, dataset, checkpoint root, verifier secret or Docker socket is
 mounted there. The Gym has private durable state. Agent and verifier identities
 use different volumes. The verifier runs in its own network-disabled container.
 
-The supplied `GymResearchAgent` exposes JSON actions only: Gym API calls,
-source-byte submission, bounded notes and final receipt writing. It offers no
-shell/code execution tool. Its model broker runs on the controller, uses only an
-explicit fixed HTTPS endpoint/model, and never transfers provider credentials
-into the container. Agent inference metering remains deferred, as in the design.
-Other Harbor agents can use the SDK but cannot claim this mediated-tool policy.
-The oracle is a bounded integration test, not an enforced research competitor.
+The launcher defaults to Harbor's built-in `claude-code`, with native model,
+version, turn and USD options. There is no Gym Agent subclass or model broker.
+The Agent has shell tools and outbound networking, while the Gym service and
+numerical workers retain their private network boundary. Provider credentials
+follow Harbor's native Agent authentication; they are not placed in Gym state or
+trial binding receipts. The Gym ledger meters service numerical work, not Agent
+inference or arbitrary local shell CPU. The oracle is an explicitly selected
+bounded test. The local model-stub smoke exercises native Claude Code without
+calling an external model provider.
+
+`get_resources` reports the local execution node and observed CPU/memory capacity.
+The launcher passes its node identity into the sidecar, and dispatched jobs record
+that identity. Capacity is one shared worker slot; running/cancelling/uncertain
+jobs from all sessions affect availability. The built-in backend launches local
+subprocesses, supports CPU research, and makes no remote-server discovery or
+GPU research scheduling claim.
 
 `HarborRuntime(environment).snapshot()` uses Harbor's real environment `exec`
-API to read the main container's `/proc` state. It separately labels the mediated
-agent's reported phase/turn. Collect hooks retain that snapshot and authenticated
+API to read the main container's `/proc` state. Optional Agent-reported state is
+labelled separately and is not required from native Claude Code. Collect hooks retain that snapshot and authenticated
 Gym evidence as native Harbor artifacts. No host-side launch flag substitutes
 for runtime observation.
 

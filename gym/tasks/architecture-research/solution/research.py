@@ -8,6 +8,17 @@ from nexttransformer_gym import GymClient
 
 binding = json.loads(Path("/run/gym-auth/credential.json").read_text())
 gym = GymClient(binding["endpoint"], binding["token"])
+resources = gym.get_resources()
+assert resources["server_count"] == resources["reachable_server_count"] == 1
+assert resources["servers"][0]["backend"] == "local_subprocess"
+history = gym.list_experiments(scope="published", limit=2)
+assert history["items"], "The sidecar must provide published research context"
+past = gym.read_experiment(scope="published", experiment_id=history["items"][0]["id"])
+assert past["result"] and past["source_reference_ids"]
+assert past["method_card"], (
+    "Published experiments should include architecture descriptions"
+)
+assert gym.read_reference(resource_id=past["source_reference_ids"][0])["content"]
 make = runpy.run_path("/opt/gym/make_candidate.py")["package"]
 observations = []
 for activation in ("square", "tanh"):
@@ -21,6 +32,9 @@ for activation in ("square", "tanh"):
         quote_id=quote["id"], idempotency_key="train-" + activation
     )
     result = gym.wait_result(job["id"])
+    record = gym.read_experiment(scope="session", experiment_id=job["id"])
+    assert record["server_id"] == resources["servers"][0]["id"]
+    assert record["candidate"]["hash"] == candidate["hash"]
     observations.append({"candidate": candidate, "result": result})
 selected = min(observations, key=lambda item: item["result"]["dev_bpb"])
 candidate = selected["candidate"]
