@@ -1,4 +1,4 @@
-"""Authenticated sidecar service and stable optional host listener."""
+"""Authenticated HTTP service with a stable host listener."""
 
 import fcntl
 import json
@@ -21,19 +21,13 @@ def atomic_json(path, value):
     temporary.replace(path)
 
 
-def bind(service, state_dir, host="127.0.0.1", container_port=None):
+def bind(service, state_dir, host="127.0.0.1"):
     state_dir = Path(state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     lock = (state_dir / "service.lock").open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     config = state_dir / "listener.json"
-    port = (
-        container_port
-        if container_port is not None
-        else json.loads(config.read_text())["port"]
-        if config.exists()
-        else 0
-    )
+    port = json.loads(config.read_text())["port"] if config.exists() else 0
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -109,8 +103,7 @@ def bind(service, state_dir, host="127.0.0.1", container_port=None):
         server = ThreadingHTTPServer((host, port), Handler)
         server.daemon_threads = True
         # Retain the bound socket; never probe and release a port.
-        if container_port is None:
-            atomic_json(config, {"port": server.server_port})
+        atomic_json(config, {"port": server.server_port})
         server.service_lock = lock
         return server
     except BaseException:
@@ -118,8 +111,8 @@ def bind(service, state_dir, host="127.0.0.1", container_port=None):
         raise
 
 
-def serve(service, state_dir, host="127.0.0.1", container_port=None):
-    server = bind(service, state_dir, host, container_port)
+def serve(service, state_dir, host="127.0.0.1"):
+    server = bind(service, state_dir, host)
     stop = threading.Event()
     scheduler = Scheduler(service)
 

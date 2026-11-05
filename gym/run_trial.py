@@ -1,4 +1,4 @@
-"""Launch one native Harbor trial with explicit allocation and isolated volumes.
+"""Launch native Harbor containers backed by a host-owned Gym service.
 
 Images must already exist locally. No implicit training authorization or builds.
 """
@@ -8,15 +8,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import shutil
-import sys
-import uuid
 import tomllib
-import hashlib
-import socket
 from decimal import Decimal, InvalidOperation
 
-import yaml
 
 from nexttransformer_gym.common import GymError
 from nexttransformer_gym.gpu import configuration, discover
@@ -39,7 +33,7 @@ def arguments():
         type=Path,
         default=runtime.get("jobs_dir", ".agent-work/harbor-gym"),
     )
-    for role in ("client", "service", "verifier"):
+    for role in ("client", "verifier"):
         parser.add_argument(f"--{role}-image", default=images.get(role))
     parser.add_argument(
         "--agent",
@@ -58,11 +52,6 @@ def arguments():
         "--timeout-sec", type=int, default=runtime.get("timeout_sec", 1800)
     )
     parser.add_argument("--server-id", default=runtime.get("server_id"))
-    parser.add_argument(
-        "--gym-backend",
-        choices=("host", "container"),
-        default=runtime.get("gym_backend", "host"),
-    )
     parser.add_argument("--host-bind", default=runtime.get("host_bind"))
     parser.add_argument("--worker-python", default=runtime.get("worker_python"))
     parser.add_argument("--profiles", type=Path, default=runtime.get("profiles"))
@@ -86,11 +75,7 @@ def arguments():
         parser.error("Agent USD limit must be finite and positive")
     if args.agent == "claude-code" and not args.model:
         parser.error("Set --model or the configured model_env for Claude Code")
-    roles = (
-        ("client", "verifier")
-        if args.gym_backend == "host"
-        else ("client", "service", "verifier")
-    )
+    roles = ("client", "verifier")
     if any(not getattr(args, role + "_image") for role in roles):
         parser.error("Prebuilt images are required for: " + ", ".join(roles))
     try:
@@ -126,35 +111,6 @@ def image_id(name):
     ).stdout.strip()
 
 
-def configure_execution(materialized, policy, jobs_dir, trial):
-    """Freeze an operator policy and expose only its authorized devices to Gym."""
-    if policy is None:
-        return
-    snapshot = (jobs_dir / (trial + ".execution.json")).resolve()
-    snapshot.write_text(json.dumps(policy, indent=2) + "\n")
-    compose_path = materialized / "environment/docker-compose.yaml"
-    compose = yaml.safe_load(compose_path.read_text())
-    service = compose["services"]["gym"]
-    service["volumes"].append(
-        {
-            "type": "bind",
-            "source": str(snapshot),
-            "target": "/run/gym-execution/config.json",
-            "read_only": True,
-            "bind": {"create_host_path": False},
-        }
-    )
-    service["environment"]["GYM_EXECUTION_CONFIG"] = "/run/gym-execution/config.json"
-    if policy["gpu_ids"]:
-        device = {
-            "driver": "nvidia",
-            "device_ids": [str(gpu) for gpu in policy["gpu_ids"]],
-            "capabilities": ["gpu"],
-        }
-        service["deploy"] = {"resources": {"reservations": {"devices": [device]}}}
-    compose_path.write_text(yaml.safe_dump(compose, sort_keys=False))
-
-
 def resolve_gpu_policy(policy):
     """Bind host selectors to stable UUIDs before container device reindexing."""
     observation = discover()
@@ -179,61 +135,6 @@ def resolve_gpu_policy(policy):
     return configuration({**policy, "gpu_ids": identifiers})
 
 
-def check_gpu_runtime(args):
-    if not args.execution_policy or not args.execution_policy["gpu_ids"]:
-        return
-    args.execution_policy = resolve_gpu_policy(args.execution_policy)
-    identifiers = args.execution_policy["gpu_ids"]
-    # Device requests also work through the NVIDIA hook with the runc runtime.
-    # Inspect CUDA build metadata and NVML visibility without creating a CUDA
-    # context; live occupancy remains the scheduler's responsibility.
-    probe_code = (
-        "import json, subprocess, torch; "
-        "visible = subprocess.check_output("
-        "['nvidia-smi', '--query-gpu=uuid', '--format=csv,noheader'], "
-        "text=True, timeout=10); "
-        "print(json.dumps({'cuda': torch.version.cuda, "
-        "'gpu_ids': [line.strip() for line in visible.splitlines() if line.strip()]}))"
-    )
-    probe = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--pull=never",
-            "--network=none",
-            "--gpus",
-            '"device=' + ",".join(identifiers) + '"',
-            "--entrypoint",
-            "python",
-            args.service_image,
-            "-c",
-            probe_code,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if probe.returncode:
-        raise SystemExit(
-            "GPU container device-request probe failed; check NVIDIA device support, "
-            "nvidia-smi and the prepared service image."
-        )
-    try:
-        observation = json.loads(probe.stdout)
-        if not observation["cuda"]:
-            raise SystemExit(
-                "GPU trials require CUDA-enabled PyTorch in the service image."
-            )
-        if sorted(observation["gpu_ids"]) != sorted(identifiers):
-            raise SystemExit(
-                "GPU container visibility does not match the authorized UUIDs."
-            )
-    except (ValueError, KeyError, TypeError):
-        raise SystemExit(
-            "GPU container device-request probe returned invalid metadata."
-        ) from None
-
-
 def main():
     args = arguments()
     if args.dry_run:
@@ -244,7 +145,7 @@ def main():
                     "research_flops_limit": str(args.research_flops_limit),
                     "timeout_sec": args.timeout_sec,
                     "execution_backend": "local_subprocess",
-                    "gym_backend": args.gym_backend,
+                    "gym_backend": "host",
                     "worker_python": args.worker_python,
                     "execution_config": (
                         str(args.execution_config) if args.execution_config else None
@@ -256,112 +157,11 @@ def main():
             )
         )
         return
-    if args.gym_backend == "host":
-        from nexttransformer_gym.host_trial import run
+    from nexttransformer_gym.host_trial import run
 
-        if args.execution_policy and args.execution_policy["gpu_ids"]:
-            args.execution_policy = resolve_gpu_policy(args.execution_policy)
-        return run(args, image_id)
-    check_gpu_runtime(args)
-    task = Path(__file__).resolve().parent / "tasks/architecture-research"
-    trial = "ntgym-" + uuid.uuid4().hex
-    environment = dict(
-        os.environ,
-        GYM_TRIAL_ID=trial,
-        GYM_RESEARCH_FLOPS_LIMIT=str(args.research_flops_limit),
-        GYM_STATE_VOLUME=trial + "-state",
-        GYM_VERIFIER_VOLUME=trial + "-verifier",
-        GYM_CLIENT_IMAGE=image_id(args.client_image),
-        GYM_SERVICE_IMAGE=image_id(args.service_image),
-        GYM_VERIFIER_IMAGE=image_id(args.verifier_image),
-        GYM_SERVER_ID=args.server_id
-        or "local-" + hashlib.sha256(socket.gethostname().encode()).hexdigest()[:12],
-    )
-    # Keep explicit cohort tags as well as immutable IDs: replacing a build tag
-    # must not leave the retained final runtime eligible for dangling-image GC.
-    for role in ("CLIENT", "SERVICE", "VERIFIER"):
-        subprocess.run(
-            [
-                "docker",
-                "image",
-                "tag",
-                environment[f"GYM_{role}_IMAGE"],
-                f"nexttransformer-gym/{trial}:{role.lower()}",
-            ],
-            check=True,
-        )
-    for name in (environment["GYM_STATE_VOLUME"], environment["GYM_VERIFIER_VOLUME"]):
-        subprocess.run(
-            [
-                "docker",
-                "volume",
-                "create",
-                "--label",
-                "nexttransformer.gym.trial=" + trial,
-                name,
-            ],
-            check=True,
-            capture_output=True,
-        )
-    args.jobs_dir.mkdir(parents=True, exist_ok=True)
-    # Durable operator receipt: no secrets; state is retained even on a failed trial.
-    (args.jobs_dir / (trial + ".binding.json")).write_text(
-        json.dumps(
-            {
-                k: environment[k]
-                for k in (
-                    "GYM_TRIAL_ID",
-                    "GYM_RESEARCH_FLOPS_LIMIT",
-                    "GYM_STATE_VOLUME",
-                    "GYM_VERIFIER_VOLUME",
-                    "GYM_CLIENT_IMAGE",
-                    "GYM_SERVICE_IMAGE",
-                    "GYM_VERIFIER_IMAGE",
-                    "GYM_SERVER_ID",
-                )
-            },
-            indent=2,
-        )
-    )
-    materialized = args.jobs_dir / (trial + "-task")
-    shutil.copytree(task, materialized)
-    configure_execution(materialized, args.execution_policy, args.jobs_dir, trial)
-    manifest = materialized / "task.toml"
-    source = manifest.read_text()
-    for variable in ("GYM_CLIENT_IMAGE", "GYM_VERIFIER_IMAGE"):
-        source = source.replace("${" + variable + "}", environment[variable])
-    source = source.replace(
-        "timeout_sec = 1800.0", f"timeout_sec = {float(args.timeout_sec)}"
-    )
-    manifest.write_text(source)
-    task = materialized
-    harbor = Path(sys.executable).parent / "harbor"
-    result = subprocess.run(
-        [
-            str(harbor),
-            "run",
-            "--path",
-            str(task),
-            *agent_arguments(args),
-            "--jobs-dir",
-            str(args.jobs_dir.resolve()),
-            "--job-name",
-            trial,
-            "--n-concurrent",
-            "1",
-            "--n-attempts",
-            "1",
-            "--max-retries",
-            "0",
-            "--yes",
-        ],
-        env=environment,
-    )
-    result_files = list((args.jobs_dir / trial).glob("*/result.json"))
-    failed = not result_files or any(
-        json.loads(path.read_text()).get("exception_info") for path in result_files
-    )
-    raise SystemExit(result.returncode or (1 if failed else 0))
+    if args.execution_policy and args.execution_policy["gpu_ids"]:
+        args.execution_policy = resolve_gpu_policy(args.execution_policy)
+    return run(args, image_id)
 
 
 if __name__ == "__main__":

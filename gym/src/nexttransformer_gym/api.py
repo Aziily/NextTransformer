@@ -1,6 +1,9 @@
 """Canonical HTTP operation definitions, also discovered by the MCP adapter."""
 
 from copy import deepcopy
+from jsonschema import Draft202012Validator
+
+from .common import GymError
 
 ID = {"type": "string", "minLength": 1}
 CURSOR = {"type": "string", "default": ""}
@@ -92,7 +95,7 @@ OPERATION_SCHEMAS = {
         CANDIDATE,
     ),
     "debug_candidate": operation(
-        "Run a named bounded diagnostic; no arbitrary commands or test code.",
+        "Run only the selected bounded diagnostic and necessary prerequisites, charging its own bound. Partial diagnostics never grant final admission; no arbitrary commands or test code.",
         {
             **CANDIDATE,
             "check": {
@@ -181,7 +184,17 @@ for name, spec in OPERATION_SCHEMAS.items():
         spec["inputSchema"]["required"].append("idempotency_key")
 
 READS = set(OPERATION_SCHEMAS) - MUTATIONS
-PARAMETERS = {
-    name: set(spec["inputSchema"]["properties"])
+VALIDATORS = {
+    name: Draft202012Validator(spec["inputSchema"])
     for name, spec in OPERATION_SCHEMAS.items()
 }
+
+
+def validate_parameters(operation, params):
+    error = next(VALIDATORS[operation].iter_errors(params), None)
+    if error is not None:
+        path = ".".join(["params", *(str(item) for item in error.absolute_path)])
+        raise GymError(
+            "invalid_request",
+            f"Invalid {path}: {error.validator} constraint failed; inspect describe_space for the input schema.",
+        )

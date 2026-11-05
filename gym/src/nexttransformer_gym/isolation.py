@@ -71,7 +71,12 @@ def command(python, platform, request):
         args += ["--ro-bind", request["checkpoint"], request["checkpoint"]]
     data = request["profile"].get("data", {"kind": "synthetic_fixture"})
     if request["mode"] != "inspect" and data["kind"] != "synthetic_fixture":
-        for path in [*data["train_paths"], data["dev_path"], data["tokenizer"]]:
+        for path in [
+            *data["train_paths"],
+            data["dev_path"],
+            data["tokenizer"],
+            data["token_bytes"],
+        ]:
             resolved = str(Path(path).resolve())
             args += ["--ro-bind", resolved, resolved]
     if request["mode"] != "inspect" and str(

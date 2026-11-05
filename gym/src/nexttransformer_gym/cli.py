@@ -57,13 +57,7 @@ def main():
     )
     commands = parser.add_subparsers(dest="command", required=True)
     server = commands.add_parser("serve")
-    server.add_argument("--container-port", type=int)
     server.add_argument("--host", default="127.0.0.1")
-    bootstrap = commands.add_parser("bootstrap")
-    bootstrap.add_argument("--flops-limit", type=int, required=True)
-    bootstrap.add_argument("--trial-id", required=True)
-    bootstrap.add_argument("--agent-credential", type=Path, required=True)
-    bootstrap.add_argument("--verifier-credential", type=Path, required=True)
     snapshot = commands.add_parser("snapshot")
     snapshot.add_argument("--credential", type=Path, required=True)
     snapshot.add_argument("--output", type=Path, required=True)
@@ -90,41 +84,7 @@ def main():
     args = parser.parse_args()
     args.state.mkdir(parents=True, exist_ok=True, mode=0o700)
     service = load(args)
-    if args.command == "bootstrap":
-        binding = args.state / "binding.json"
-        if binding.exists():
-            old = json.loads(binding.read_text())
-            if old["trial_id"] != args.trial_id or old["flops_limit"] != str(
-                args.flops_limit
-            ):
-                parser.error("Existing trial allocation cannot be reset or rebound")
-            return
-        if args.agent_credential.exists() or args.verifier_credential.exists():
-            parser.error("Credential destination already exists")
-        session = service.create_session(args.flops_limit, args.trial_id)
-        for path, role in (
-            (args.agent_credential, "agent"),
-            (args.verifier_credential, "verifier"),
-        ):
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_json(
-                path,
-                {
-                    "session_id": session["session_id"],
-                    "token": session[role + "_token"],
-                    "endpoint": "http://gym:8080",
-                },
-            )
-            path.chmod(0o444)
-        atomic_json(
-            binding,
-            {
-                "session_id": session["session_id"],
-                "trial_id": args.trial_id,
-                "flops_limit": str(args.flops_limit),
-            },
-        )
-    elif args.command == "snapshot":
+    if args.command == "snapshot":
         binding = json.loads(args.credential.read_text())
         with service.store.transaction() as db:
             sid = binding["session_id"]
@@ -189,7 +149,7 @@ def main():
             )
         )
     else:
-        serve(service, args.state, args.host, args.container_port)
+        serve(service, args.state, args.host)
 
 
 if __name__ == "__main__":

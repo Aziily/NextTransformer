@@ -11,7 +11,6 @@ destination = "agent-runtime.json"
 [[artifacts]]
 source = "/export/evidence.json"
 destination = "gym-evidence.json"
-service = "gym"
 
 [task]
 name = "nexttransformer/architecture-research"
@@ -37,15 +36,6 @@ transport = "stdio"
 command = "python"
 args = ["-m", "nexttransformer_gym.mcp_server"]
 
-[environment.env]
-GYM_CLIENT_IMAGE = "${GYM_CLIENT_IMAGE}"
-GYM_SERVICE_IMAGE = "${GYM_SERVICE_IMAGE}"
-GYM_RESEARCH_FLOPS_LIMIT = "${GYM_RESEARCH_FLOPS_LIMIT}"
-GYM_TRIAL_ID = "${GYM_TRIAL_ID}"
-GYM_STATE_VOLUME = "${GYM_STATE_VOLUME}"
-GYM_VERIFIER_VOLUME = "${GYM_VERIFIER_VOLUME}"
-GYM_SERVER_ID = "${GYM_SERVER_ID}"
-
 [verifier]
 timeout_sec = 60.0
 environment_mode = "separate"
@@ -55,15 +45,7 @@ service = "main"
 command = "python /opt/gym/runtime_snapshot.py"
 user = "root"
 
-[[verifier.collect]]
-service = "gym"
-command = "python -m nexttransformer_gym.harbor_evidence"
-
 [verifier.environment]
 docker_image = "${GYM_VERIFIER_IMAGE}"
 cpus = 1
 memory_mb = 256
-
-[verifier.environment.env]
-GYM_VERIFIER_IMAGE = "${GYM_VERIFIER_IMAGE}"
-GYM_VERIFIER_VOLUME = "${GYM_VERIFIER_VOLUME}"

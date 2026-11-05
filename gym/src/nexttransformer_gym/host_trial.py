@@ -158,29 +158,18 @@ def materialize_task(
     source, destination, host_dir = Path(source), Path(destination), Path(host_dir)
     shutil.copytree(source, destination)
     manifest = tomllib.loads((destination / "task.toml").read_text())
-    for artifact in manifest["artifacts"]:
-        if artifact.get("service") == "gym":
-            artifact.pop("service")
     manifest["agent"]["timeout_sec"] = float(timeout_sec)
     manifest["environment"]["docker_image"] = client_image
-    manifest["environment"]["env"] = {}
-    manifest["verifier"]["collect"] = [
-        item for item in manifest["verifier"]["collect"] if item.get("service") != "gym"
-    ]
     manifest["verifier"]["environment"]["docker_image"] = verifier_image
-    manifest["verifier"]["environment"]["env"] = {}
     (destination / "task.toml").write_text(toml.dumps(manifest))
     compose_path = destination / "environment/docker-compose.yaml"
     compose = yaml.safe_load(compose_path.read_text())
     main = compose["services"]["main"]
     main["image"] = client_image
-    main.pop("depends_on", None)
-    main["networks"] = ["agent-egress"]
     main["volumes"] = [
         _mount(host_dir / "agent-auth", "/run/gym-auth"),
         _mount(host_dir / "export", "/export"),
     ]
-    compose = {"services": {"main": main}, "networks": {"agent-egress": {}}}
     compose_path.write_text(yaml.safe_dump(compose, sort_keys=False))
     verifier_path = destination / "tests/docker-compose.yaml"
     verifier = yaml.safe_load(verifier_path.read_text())["services"]["main"]

@@ -191,7 +191,6 @@ def main():
         "--state", type=Path, default=ROOT.parent / ".agent-work/claude-gym-smoke"
     )
     parser.add_argument("--client-image", default="nt-gym-client:local")
-    parser.add_argument("--service-image", default="nt-gym-service:local")
     parser.add_argument("--verifier-image", default="nt-gym-verifier:local")
     args = parser.parse_args()
     token = secrets.token_urlsafe(32)
@@ -231,8 +230,6 @@ def main():
                 str(jobs),
                 "--client-image",
                 args.client_image,
-                "--service-image",
-                args.service_image,
                 "--verifier-image",
                 args.verifier_image,
             ],

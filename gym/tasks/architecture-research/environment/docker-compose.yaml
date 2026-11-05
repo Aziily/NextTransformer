@@ -1,69 +1,40 @@
+# Materialized with immutable images and per-trial host paths by gym/run_trial.py.
 services:
   main:
     image: ${GYM_CLIENT_IMAGE:?Prepare a digest-pinned client image}
     pull_policy: never
-    command: ["sleep", "infinity"]
+    command:
+    - sleep
+    - infinity
     user: agent
     working_dir: /workspace
-    depends_on:
-      gym:
-        condition: service_healthy
-    networks: [research, agent-egress]
-    extra_hosts: ["host.docker.internal:host-gateway"]
+    networks:
+    - agent-egress
+    extra_hosts:
+    - host.docker.internal:host-gateway
     volumes:
-      - agent-auth:/run/gym-auth:ro
-    cap_drop: [ALL]
-    # Harbor installs user-owned CLI configuration and collects Agent logs as root.
-    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
-    security_opt: ["no-new-privileges:true"]
+    - type: bind
+      source: ${GYM_AGENT_AUTH_DIR:?Use gym/run_trial.py to provision credentials}
+      target: /run/gym-auth
+      read_only: true
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ${GYM_EXPORT_DIR:?Use gym/run_trial.py to provision signed evidence}
+      target: /export
+      read_only: true
+      bind:
+        create_host_path: false
+    cap_drop:
+    - ALL
+    cap_add:
+    - CHOWN
+    - FOWNER
+    - DAC_OVERRIDE
+    security_opt:
+    - no-new-privileges:true
     cpus: 1
     mem_limit: 2g
     pids_limit: 128
-
-  gym:
-    image: ${GYM_SERVICE_IMAGE:?Prepare a digest-pinned service image}
-    pull_policy: never
-    init: true
-    environment:
-      GYM_RESEARCH_FLOPS_LIMIT: ${GYM_RESEARCH_FLOPS_LIMIT:?Explicit allocation required}
-      GYM_TRIAL_ID: ${GYM_TRIAL_ID:?Unique trial binding required}
-      GYM_SERVER_ID: ${GYM_SERVER_ID:?Local execution node identity required}
-    networks: [research]
-    read_only: true
-    tmpfs: [/tmp]
-    volumes:
-      - gym-state:/state
-      - agent-auth:/run/agent-auth
-      - verifier-auth:/run/verifier-auth
-      - gym-export:/export
-    cap_drop: [ALL]
-    cap_add: [SETUID, SETGID]
-    cpus: 2
-    mem_limit: 4g
-    pids_limit: 256
-    # Native plugin workers create their own user/mount/PID/network namespaces.
-    # Only UID/GID switching is allowed to launch unprivileged workers. Workers
-    # drop all capabilities and have no controller procfs, host socket or network.
-    security_opt: ["no-new-privileges:true", "seccomp:unconfined", "apparmor:unconfined"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2)"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    stop_grace_period: 15s
-
 networks:
   agent-egress: {}
-  research:
-    internal: true
-
-volumes:
-  agent-auth:
-  gym-export:
-  # State and verifier identity outlive the agent trial. Explicit controller cleanup only.
-  gym-state:
-    external: true
-    name: ${GYM_STATE_VOLUME:?Prepare a per-trial state volume}
-  verifier-auth:
-    external: true
-    name: ${GYM_VERIFIER_VOLUME:?Prepare a per-trial verifier identity volume}

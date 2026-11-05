@@ -2,13 +2,15 @@
 
 import base64
 import hashlib
+import io
 import json
 import secrets
 import time
+import zipfile
 from .common import GymError, canonical, identity, integer, new_id, require
 from .package import CONTRACT, ingest
 from .store import Store
-from .api import MUTATIONS, READS, PARAMETERS, OPERATION_SCHEMAS
+from .api import MUTATIONS, READS, OPERATION_SCHEMAS, validate_parameters
 
 TERMINAL = {"succeeded", "failed", "cancelled", "budget_stopped"}
 REQUIRED_CHECKS = {"construction", "numerical", "causal", "checkpoint", "cost_coverage"}
@@ -22,7 +24,7 @@ class Service:
 
     def create_session(self, research_flops_limit, trial_id, max_concurrent=1):
         integer(research_flops_limit, 1)
-        integer(max_concurrent, 1, 16)
+        integer(max_concurrent, 1, 1)
         require(
             isinstance(trial_id, str) and bool(trial_id),
             "invalid_request",
@@ -89,18 +91,14 @@ class Service:
                 "denied_access",
                 "Operation is outside the agent API.",
             )
-            require(
-                set(params) <= PARAMETERS[operation],
-                "invalid_request",
-                "Unknown operation parameter; paths, commands and environment overrides are not accepted.",
-            )
-            require(
-                set(OPERATION_SCHEMAS[operation]["inputSchema"]["required"])
-                <= set(params),
-                "invalid_request",
-                "Missing required operation parameter; inspect describe_space for the HTTP schema.",
-            )
-            key, request = params.get("idempotency_key"), canonical([operation, params])
+            validate_parameters(operation, params)
+            try:
+                request = canonical([operation, params])
+            except (ValueError, TypeError):
+                raise GymError(
+                    "invalid_request", "Parameters must contain finite JSON values."
+                ) from None
+            key = params.get("idempotency_key")
             if operation in MUTATIONS:
                 require(
                     isinstance(key, str) and 0 < len(key) <= 128,
@@ -172,7 +170,7 @@ class Service:
             profile, p.get("gpu_id"), p.get("server_id")
         )
         require(
-            profile["kind"] == "research" or operation == "validate",
+            profile["kind"] == "research" or operation in {"validate", "debug"},
             "denied_access",
             "Final profiles cannot be used for research training.",
         )
@@ -195,7 +193,7 @@ class Service:
             "resource_unavailable",
             "Resource profile does not match this execution profile.",
         )
-        memory = profile.get("memory_limit_bytes")
+        memory = self.backend.bounded_profile(profile).get("memory_limit_bytes")
         quota = profile.get("checkpoint_quota_bytes")
         integer(memory, 1)
         integer(quota, 1)
@@ -223,7 +221,9 @@ class Service:
             "resource_unavailable",
             "Session checkpoint storage quota is reserved or exhausted.",
         )
-        amount = self.backend.bound(report, operation, target - start, profile)
+        amount = self.backend.bound(
+            report, operation, target - start, profile, check=p.get("check")
+        )
         integer(amount, 1)
         quote = {
             "candidate_id": candidate_id,
@@ -244,6 +244,8 @@ class Service:
             "checkpoint_reservation_bytes": checkpoint_bound,
             "affordable": amount <= int(self.store.budget(db, sid)["available"]),
         }
+        if operation == "debug":
+            quote["check"] = p["check"]
         return self.store.put(db, sid, "quote", quote)
 
     def queue(self, db, sid, quote_id):
@@ -469,7 +471,9 @@ class Service:
                         "invalid_request",
                         "Diagnostic shape must match the pinned supported shape.",
                     )
-            quote = self.quote(db, sid, p, "validate")
+            quote = self.quote(
+                db, sid, p, "debug" if op == "debug_candidate" else "validate"
+            )
             return self.queue(db, sid, quote["id"])
         if op == "calibrate_candidate":
             self.session(db, sid, researching=True)
@@ -492,8 +496,6 @@ class Service:
                 proposal["parent_ids"] = [original["id"]]
                 package["proposal.json"] = canonical(proposal)
                 package["architecture.json"] = canonical(architecture)
-                import io, zipfile
-
                 out = io.BytesIO()
                 with zipfile.ZipFile(out, "w") as archive:
                     for name, content in package.items():

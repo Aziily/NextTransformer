@@ -104,6 +104,105 @@ def execute(request):
         return result
 
     emit({"kind": "runtime", "value": execution()})
+    if quote["operation"] == "debug":
+        check = quote["check"]
+        batch, length = profile["batch_size"], profile["sequence_len"]
+
+        def diagnostic():
+            # Construction and the trusted static cost trace are prerequisites
+            # of every diagnostic; neither requires another numerical pass.
+            if check == "construction":
+                return True
+            if check == "cost_coverage":
+                return report["coverage"] == "complete"
+            x = (
+                torch.arange(batch * length, device=device).reshape(batch, length)
+                % profile["vocab_size"]
+            )
+            if check == "causal":
+                model.eval()
+                with torch.no_grad():
+                    first = model(x)
+                    altered = x.clone()
+                    altered[:, length // 2 :] = (
+                        altered[:, length // 2 :] + 1
+                    ) % profile["vocab_size"]
+                    second = model(altered)
+                return torch.equal(first[:, : length // 2], second[:, : length // 2])
+            optimizer = build_optimizer(model, NativeTrainConfig())
+            model.train()
+            loss = model(x, x)
+            loss.backward()
+            finite = bool(torch.isfinite(loss)) and all(
+                p.grad is not None and bool(torch.isfinite(p.grad).all())
+                for p in model.parameters()
+                if p.requires_grad
+            )
+            optimizer.step()
+            if check == "numerical":
+                return finite
+            require(
+                check == "checkpoint", "invalid_request", "Unknown named diagnostic."
+            )
+            import io
+
+            train, _, _ = streams(profile)
+            model.eval()
+            with torch.no_grad():
+                first = model(x)
+                checkpoint = io.BytesIO()
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "data": train.state_dict(),
+                        "rng": rng_state(),
+                        "routing_rng": model.routing_rng_state(),
+                    },
+                    checkpoint,
+                )
+                checkpoint.seek(0)
+                saved = torch.load(checkpoint, weights_only=False, map_location="cpu")
+                restored = build(candidate, profile)
+                restored.load_state_dict(saved["model"])
+                restored_optimizer = build_optimizer(restored, NativeTrainConfig())
+                restored_optimizer.load_state_dict(saved["optimizer"])
+                train.load_state_dict(saved["data"])
+                restore_rng(saved["rng"])
+                restored.restore_routing_rng(saved["routing_rng"])
+                restored.eval()
+                return torch.equal(first, restored(x))
+
+        extra = {
+            "construction": 0,
+            "cost_coverage": 0,
+            "numerical": forward + backward + optimizer_cost,
+            "causal": 2 * int(report["prediction"]),
+            "checkpoint": init
+            + forward
+            + backward
+            + optimizer_cost
+            + 2 * int(report["prediction"]),
+        }[check]
+        passed = (
+            operation("debug-" + check, extra, diagnostic) if extra else diagnostic()
+        )
+        emit(
+            {
+                "kind": "result",
+                "value": {
+                    "check": check,
+                    "checks": {check: passed},
+                    "admitted": False,
+                    "execution": execution(),
+                    "candidate_hash": candidate["hash"],
+                    "profile_hash": quote["profile_hash"],
+                    "runtime_revision": quote["runtime_revision"],
+                    "accounting": "reference-aten-math-v2",
+                },
+            }
+        )
+        return
     optimizer = build_optimizer(model, NativeTrainConfig())
     train, dev, token_bytes = streams(profile)
     step, cumulative = 0, 0

@@ -228,7 +228,6 @@ def test_crash_recovery_keeps_reservation(context):
     with service.store.transaction() as db:
         job.update(state="running", lease="old-controller")
         service.store.update(db, credentials["session_id"], "job", job)
-    Scheduler(service).recover()
     assert call("get_budget")["reserved"] == quote["bound"]
     reconcile(
         service, credentials["session_id"], job["id"], worker_confirmed_stopped=True
@@ -334,8 +333,13 @@ def test_harbor_native_schema():
 
     task = Task(ROOT / "gym/tasks/architecture-research")
     assert str(resolve_task_verifier_mode(task.config).value) == "separate"
-    assert any(a.service == "gym" for a in task.config.artifacts)
-    assert [h.service for h in task.config.verifier.collect] == ["main", "gym"]
+    assert {a.destination for a in task.config.artifacts} == {
+        "submission.json",
+        "agent-runtime.json",
+        "gym-evidence.json",
+    }
+    assert all(a.service in (None, "main") for a in task.config.artifacts)
+    assert [h.service for h in task.config.verifier.collect] == ["main"]
 
 
 def test_native_model_loss_gradients_and_cost_parity():
@@ -447,10 +451,20 @@ def test_unknown_parameters_are_not_silently_accepted(context):
         context[2]("get_budget", command="anything")
 
 
-def test_trial_receipt_never_persists_provider_credentials(monkeypatch, tmp_path):
+def test_trial_receipt_never_persists_provider_credentials(
+    monkeypatch, tmp_path, context
+):
     import subprocess
     import sys
     from types import SimpleNamespace
+    from nexttransformer_gym import host_trial
+
+    async def no_trial_result(*_args):
+        return None
+
+    monkeypatch.setattr(host_trial, "load", lambda _args: context[0])
+    monkeypatch.setattr(host_trial, "docker_gateway", lambda: "127.0.0.1")
+    monkeypatch.setattr(host_trial, "run_job", no_trial_result)
 
     runner = runpy.run_path(str(ROOT / "gym/run_trial.py"))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-provider-secret-never-persist")
@@ -468,16 +482,12 @@ def test_trial_receipt_never_persists_provider_credentials(monkeypatch, tmp_path
             "run_trial.py",
             "--agent",
             "oracle",
-            "--gym-backend",
-            "container",
             "--research-flops-limit",
             "1000",
             "--jobs-dir",
             str(tmp_path),
             "--client-image",
             "client",
-            "--service-image",
-            "service",
             "--verifier-image",
             "verifier",
         ],

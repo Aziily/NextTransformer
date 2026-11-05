@@ -132,9 +132,24 @@ print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list
         )
         self.cache = {}
 
+    def bounded_profile(self, profile):
+        """Single-device diagnostic view; preserve the operator's final plan."""
+        if not profile.get("official_plan"):
+            return profile
+        return {
+            **profile,
+            "device": "cuda:0",
+            "accelerator_class": "cuda",
+            "memory_limit_bytes": min(
+                profile["memory_limit_bytes"],
+                self.execution_config["gpu_memory_limit_bytes"],
+            ),
+        }
+
     def validate_placement(self, profile, gpu_id=None, server_id=None):
         from .gpu import allocated, discover
 
+        profile = self.bounded_profile(profile)
         require(
             server_id is None or server_id == self.server_id,
             "invalid_request",
@@ -148,9 +163,9 @@ print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list
             )
             return None
         require(
-            not profile.get("official_plan"),
-            "invalid_request",
-            "Official placement is operator controlled.",
+            bool(self.execution_config["gpu_ids"]),
+            "resource_unavailable",
+            "Bounded CUDA work requires an operator execution allocation.",
         )
         if gpu_id is None:
             return None
@@ -238,6 +253,7 @@ print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list
 
         for profile in self.profiles.values():
             devices = profile.get("cuda_visible_devices", [])
+            bounded = self.bounded_profile(profile)
             public = {
                 k: profile[k]
                 for k in (
@@ -253,16 +269,20 @@ print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list
             }
             public.update(
                 model_config_constraints=profile_constraints(profile),
-                accelerator_class=profile.get("accelerator_class", "cpu"),
-                device=profile.get("device", "cpu"),
-                usable_memory_bytes_per_device=profile.get("memory_limit_bytes"),
-                supported_device_counts=[len(devices)] if devices else [1],
-                supported_precisions=["bfloat16"]
-                if profile.get("official_plan")
-                else ["float32"],
+                accelerator_class=bounded.get("accelerator_class", "cpu"),
+                device=bounded.get("device", "cpu"),
+                usable_memory_bytes_per_device=bounded.get("memory_limit_bytes"),
+                supported_device_counts=[1],
+                supported_precisions=["float32"],
                 runtime_manifest_id=self.revision,
                 checkpoint_quota_bytes=profile.get("checkpoint_quota_bytes"),
             )
+            if profile.get("official_plan"):
+                public["operator_final_training"] = {
+                    "device_count": len(devices),
+                    "precision": "bfloat16",
+                    "agent_dispatch_allowed": False,
+                }
             yield public
 
     def environment(self, profile=None, official=False, gpu=None):
@@ -357,13 +377,27 @@ print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list
         return {}
 
     @staticmethod
-    def bound(report, operation, updates, profile):
+    def bound(report, operation, updates, profile, check=None):
         init, fwd, bwd, opt = (
             int(report[k])
             for k in ("initialization", "forward", "backward", "optimizer")
         )
         if operation == "validate":
             return 2 * init + fwd + bwd + opt + 3 * int(report["prediction"])
+        if operation == "debug":
+            costs = {
+                "construction": init,
+                "cost_coverage": init,
+                "numerical": init + fwd + bwd + opt,
+                "causal": init + 2 * int(report["prediction"]),
+                "checkpoint": 2 * init
+                + fwd
+                + bwd
+                + opt
+                + 2 * int(report["prediction"]),
+            }
+            require(check in costs, "invalid_request", "Unknown named diagnostic.")
+            return costs[check]
         return (
             init
             + updates * (fwd + bwd + opt)
@@ -384,18 +418,6 @@ print(json.dumps({'dependencies': {n:m.version(n) for n in names}, 'python':list
 class Scheduler:
     def __init__(self, service):
         self.service, self.backend, self.store = service, service.backend, service.store
-
-    def recover(self):
-        """Called only under the resource lock, after the old controller is gone."""
-        with self.store.transaction() as db:
-            rows = db.execute(
-                "SELECT owner,value FROM objects WHERE kind='job'"
-            ).fetchall()
-            for sid, raw in rows:
-                job = json.loads(raw)
-                if job["state"] in {"running", "cancelling"}:
-                    job.update(state="reconciliation", error_code="worker_lost")
-                    self.store.update(db, sid, "job", job)
 
     def work_once(self):
         with (
@@ -430,6 +452,8 @@ class Scheduler:
                     return False
                 quote = self.store.get(db, sid, "quote", job["quote_id"])
                 profile = self.backend.profiles[quote["profile_id"]]
+                if quote["operation"] != "official":
+                    profile = self.backend.bounded_profile(profile)
                 if (
                     str(profile.get("device", "cpu")).startswith("cuda")
                     and quote["operation"] != "official"
@@ -442,8 +466,15 @@ class Scheduler:
                             "resource_unavailable",
                             "Configured worker Python has no CUDA runtime.",
                         )
+                        policy = {
+                            **self.backend.execution_config,
+                            "gpu_memory_limit_bytes": min(
+                                profile["memory_limit_bytes"],
+                                self.backend.execution_config["gpu_memory_limit_bytes"],
+                            ),
+                        }
                         allocation = leases.enter_context(
-                            reserve(self.backend.execution_config, quote.get("gpu_id"))
+                            reserve(policy, quote.get("gpu_id"))
                         )
                     except GymError as error:
                         if job.get("waiting_reason") != str(error):
@@ -494,6 +525,8 @@ class Scheduler:
 
     def execute(self, sid, job, quote, candidate):
         profile = self.backend.profiles[quote["profile_id"]]
+        if quote["operation"] != "official":
+            profile = self.backend.bounded_profile(profile)
         output_id = new_id()
         workspace = tempfile.TemporaryDirectory(
             prefix="worker-", dir=self.backend.state_dir
@@ -671,7 +704,7 @@ class Scheduler:
                     )
                     if quote["operation"] == "validate":
                         self.store.put(db, sid, "report", {**result, "id": new_id()})
-                    elif quote["operation"] != "official":
+                    elif quote["operation"] == "train":
                         require(
                             output.is_file()
                             and not output.is_symlink()

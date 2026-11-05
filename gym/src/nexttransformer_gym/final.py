@@ -1,5 +1,7 @@
 """Privileged final allocation and dispatch, never part of the agent HTTP API."""
 
+import fcntl
+
 from .common import identity, integer, require, new_id
 
 
@@ -156,21 +158,32 @@ def reconcile(service, owner, job_id, *, worker_confirmed_stopped):
         "unsettled_work",
         "Controller must establish worker termination before settling.",
     )
-    with service.store.transaction() as db:
-        job = service.store.get(db, owner, "job", job_id)
-        require(
-            job["state"] == "reconciliation",
-            "conflict",
-            "Only uncertain work can be reconciled.",
-        )
-        reservation = service.store.get(db, owner, "reservation", job_id)
-        service.store.charge(
-            db,
-            owner,
-            job_id,
-            identity([job_id, "conservative_settlement"]),
-            int(reservation["remaining"]),
-        )
-        job.update(state="failed", lease=None, settlement="conservative_reserved_bound")
-        service.store.update(db, owner, "job", job)
-        return job
+    with (service.backend.state_dir / "worker.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            require(False, "unsettled_work", "A scheduler still owns the worker slot.")
+        with service.store.transaction() as db:
+            job = service.store.get(db, owner, "job", job_id)
+            if job.get("settlement") == "conservative_reserved_bound":
+                return job
+            # A controller crash can leave running/cancelling persisted before
+            # any recovery code gets a chance to mark reconciliation.
+            require(
+                job["state"] in {"running", "cancelling", "reconciliation"},
+                "conflict",
+                "Only uncertain work can be reconciled.",
+            )
+            reservation = service.store.get(db, owner, "reservation", job_id)
+            service.store.charge(
+                db,
+                owner,
+                job_id,
+                identity([job_id, "conservative_settlement"]),
+                int(reservation["remaining"]),
+            )
+            job.update(
+                state="failed", lease=None, settlement="conservative_reserved_bound"
+            )
+            service.store.update(db, owner, "job", job)
+            return job
