@@ -14,6 +14,17 @@ namespaces with no controller procfs mount. Runtime revisions bind the actual de
 | Post-cleanup final fixture | Separately allocated fresh initialization succeeded using retained state and the original image |
 | Native static final preparation | A 23-layer candidate passed calibration and admission; 125 source/config/proof files pinned |
 
+After aligning Gym with native last-shard validation and confirming ID-based
+delivery, the Gym suite was rerun: **29 passed**. The added coverage compares
+training and validation batches with native `BestFitStream`, checks continuation,
+allows shard 06541 in the full training prefix and rejects validation/training
+overlap. Final-dispatch coverage recreates the service/backend from durable state
+and completes a fresh CPU fixture run using the submission receipt, with matching
+candidate identity. Formatting, undefined/unused-name checks and documentation
+links also passed. The Docker and full repository results above are from the
+earlier native-plugin baseline; no production ClimbMix or GPU run was performed
+for this follow-up.
+
 Reproduce the maintained checks from the repository root:
 
 ```sh

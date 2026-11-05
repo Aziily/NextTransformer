@@ -117,8 +117,12 @@ def test_full_submission_verifier_and_separate_final(context):
     for op in ("submit_candidate", "run_experiment", "launch_final_run"):
         with pytest.raises(GymError):
             service.call(credentials["verifier_token"], op, {})
+    # The final dispatcher needs only the receipt and durable Gym state, not
+    # an Agent workspace or the original in-memory candidate/service objects.
+    backend = NativeBackend(service.backend.profiles, service.backend.state_dir, ROOT)
+    service = Service(backend.state_dir / "gym.sqlite3", backend)
     run = launch_final_run(
-        service, credentials["session_id"], submission["id"], 10**12, "dispatch"
+        service, receipt["session_id"], receipt["submission_id"], 10**12, "dispatch"
     )
     assert run == launch_final_run(
         service, credentials["session_id"], submission["id"], 10**12, "dispatch"
@@ -128,6 +132,7 @@ def test_full_submission_verifier_and_separate_final(context):
     assert final["state"] == "succeeded"
     assert final["result"]["rank"] is None and final["result"]["core"] is None
     assert final["result"]["official_compatible"] is False
+    assert final["result"]["candidate_hash"] == receipt["candidate_hash"]
     assert (
         call("get_submission", submission_id=submission["id"])["final_run_state"]
         == "succeeded"
@@ -340,7 +345,8 @@ assert sum(int(report[k]) for k in ('forward','backward','optimizer'))==original
     assert result.returncode == 0, result.stderr
 
 
-def test_dev_only_stream_and_reference_packing_parity(tmp_path):
+@pytest.mark.parametrize("split", ["train", "val", "dev"])
+def test_native_train_validation_stream_parity(tmp_path, split):
     import pyarrow as pa
     import pyarrow.parquet as pq
     import torch
@@ -358,16 +364,14 @@ def test_dev_only_stream_and_reference_packing_parity(tmp_path):
         pa.table({"text": ["training text"] * 3000}), tmp_path / "shard_00000.parquet"
     )
     pq.write_table(
-        pa.table({"text": ["dev only"] * 1000}), tmp_path / "shard_06541.parquet"
-    )
-    pq.write_table(
-        pa.table({"text": ["never open formal validation"]}),
+        pa.table({"text": ["validation text"] * 3000}),
         tmp_path / "shard_06542.parquet",
     )
-    adapted = parquet_stream(
-        [tmp_path / "shard_00000.parquet"], Tokenizer(), 8, "train"
-    )
-    reference = BestFitStream(tmp_path, Tokenizer(), "train", sequence_len=8)
+    native_split = "train" if split == "train" else "val"
+    shard = "shard_00000.parquet" if split == "train" else "shard_06542.parquet"
+    adapted = parquet_stream([tmp_path / shard], Tokenizer(), 8, split)
+    reference = BestFitStream(tmp_path, Tokenizer(), native_split, sequence_len=8)
+    assert adapted.paths == reference.paths and adapted.split == reference.split
     assert all(
         torch.equal(a, b)
         for a, b in zip(
@@ -375,10 +379,36 @@ def test_dev_only_stream_and_reference_packing_parity(tmp_path):
             reference.batch(3, torch.device("cpu")),
         )
     )
-    with pytest.raises(GymError):
-        parquet_stream([tmp_path / "shard_06541.parquet"], Tokenizer(), 8, "train")
-    with pytest.raises(GymError):
-        parquet_stream([tmp_path / "shard_06542.parquet"], Tokenizer(), 8, "dev")
+    state = adapted.state_dict()
+    expected = adapted.batch(3, torch.device("cpu"))
+    resumed = parquet_stream([tmp_path / shard], Tokenizer(), 8, split)
+    resumed.load_state_dict(state)
+    assert all(
+        torch.equal(a, b)
+        for a, b in zip(expected, resumed.batch(3, torch.device("cpu")))
+    )
+
+
+def test_last_shard_is_validation_and_penultimate_is_training(monkeypatch, tmp_path):
+    from nexttransformer_gym import data
+    from nexttransformer.runtime.files import VALIDATION_SHARD
+
+    # Check the full inventory boundary without creating thousands of parquet files.
+    monkeypatch.setattr(data, "file_hash", lambda path: path.name)
+    paths = [tmp_path / f"shard_{i:05d}.parquet" for i in range(6542)]
+    stream = data.parquet_stream(paths, None, 8, "train")
+    assert stream.paths[-1].name == "shard_06541.parquet"
+    validation = tmp_path / VALIDATION_SHARD
+    for invalid_paths, split in (
+        (paths + [validation], "train"),
+        ([validation], "train"),
+        ([paths[-1]], "val"),
+        ([paths[-1]], "dev"),
+        ([paths[-1], validation], "val"),
+        (list(reversed(paths)), "train"),
+    ):
+        with pytest.raises(GymError):
+            data.parquet_stream(invalid_paths, None, 8, split)
 
 
 def test_unknown_parameters_are_not_silently_accepted(context):

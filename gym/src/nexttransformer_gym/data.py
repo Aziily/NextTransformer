@@ -1,4 +1,4 @@
-"""Explicit data views; research never opens a validation shard.
+"""Explicit native training/validation views for auto-research.
 
 Reuses the upstream best-fit algorithm without changing its source. The adapter
 sets the same stream fields but supplies a manifest-selected list of shards.
@@ -10,31 +10,32 @@ from .common import identity, require, file_hash
 
 def parquet_stream(paths, tokenizer, sequence_len, split):
     from nexttransformer.runtime.data import BestFitStream
+    from nexttransformer.runtime.files import VALIDATION_SHARD
 
     paths = [Path(p) for p in paths]
     require(
-        bool(paths) and split in {"train", "dev"},
+        bool(paths) and split in {"train", "val", "dev"},
         "invalid_request",
-        "Explicit train/dev paths are required.",
+        "Explicit training/validation paths are required.",
     )
+    # Keep the existing Gym dev API names, using the native validation split.
+    split = "val" if split == "dev" else split
     names = [p.name for p in paths]
     require(
-        "shard_06542.parquet" not in names,
+        (split == "val" and names == [VALIDATION_SHARD])
+        or (split == "train" and VALIDATION_SHARD not in names),
         "denied_access",
-        "Formal validation is not a research data view.",
-    )
-    require(
-        (split == "dev" and names == ["shard_06541.parquet"])
-        or (split == "train" and "shard_06541.parquet" not in names),
-        "denied_access",
-        "Train and dev data views overlap.",
+        "Validation must use the pinned last shard; training must exclude it.",
     )
     if split == "train":
+        validation_index = int(
+            VALIDATION_SHARD.removeprefix("shard_").removesuffix(".parquet")
+        )
         require(
             names == [f"shard_{i:05d}.parquet" for i in range(len(names))]
-            and len(names) <= 6541,
+            and len(names) <= validation_index,
             "incompatible_contract",
-            "Training view must be the pinned contiguous prefix before dev.",
+            "Training view must be the pinned contiguous prefix before validation.",
         )
     stream = object.__new__(BestFitStream)
     stream.paths, stream.tokenizer, stream.split = paths, tokenizer, split

@@ -3,6 +3,11 @@
 The design authority is `../docs/design/gym-design-interface.md`. Harbor 0.24.0
 and task schema 1.4 are pinned. This document describes the implementation's
 supported subset and release gates, not a change to the scientific protocol.
+The revised [auto-research roadmap](ROADMAP.md) records the newer target and its
+remaining gaps, including native Claude Code and network/history access. The data
+adapter now follows native last-shard validation, and ID-based final delivery is
+retained as agreed. Research validation access supersedes the original proposal's
+separate dev-shard policy for this Gym task only.
 
 ## Candidate runtime
 
@@ -99,9 +104,15 @@ continuation, and bound to exact candidate/profile/runtime identities. Source
 changes start over. Dev scoring is performed by trusted code from predictions,
 labels and token-byte lengths; candidate-returned metrics are never accepted.
 
-The parquet adapter selects an explicit contiguous training prefix excluding
-`shard_06541.parquet` and `shard_06542.parquet`. Dev selects only shard 06541.
-It reuses upstream best-fit row generation and refuses training-prefix exhaustion.
+The parquet adapter selects an explicit contiguous training prefix up to and
+including `shard_06541.parquet`, excluding the pinned native `VALIDATION_SHARD`
+(`shard_06542.parquet`). Validation selects only that last shard, matching the
+repository's default split. The existing profile key `dev_path`, `dev_batches`
+and result key `dev_bpb` now refer to this research-visible validation feedback;
+`dev_path` must name the pinned last shard. The stream accepts `val` and the legacy
+`dev` alias, using native `val` semantics for both. CORE-22 remains outside research
+data views. The adapter reuses upstream best-fit row generation and refuses
+training-prefix exhaustion.
 The shipped profile uses deterministic synthetic data, explicitly labelled as a
 fixture; it is never presented as ClimbMix or as a formal comparison.
 
@@ -134,6 +145,12 @@ a reconciled account and no active jobs. It freezes one choice. The separate
 Harbor verifier checks a receipt against HMAC-authenticated server evidence and
 its trusted per-trial binding. Reward 1 means deliverable validity only. There is
 no automatic final launch, model performance reward or leaderboard rank.
+The receipt contains `session_id`, `submission_id` and `candidate_hash`. Gym keeps
+the complete native source package and configuration in durable service state.
+Final dispatch resolves that submission and retains its code under the final run's
+own account, so training needs neither an exported archive nor a live Agent
+workspace. Preserve the trial's state volume and pinned runtime images until final
+training and retention finish.
 
 `prepare-final` creates a separate Git snapshot, copies the original native plugin
 without modification, re-audits the selected configuration without searching for a

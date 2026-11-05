@@ -5,6 +5,10 @@ Harbor is a pinned dependency; its source and the existing NextTransformer scien
 code are unchanged. Read [CONTRACT.md](CONTRACT.md) for the supported source language,
 accounting rules, trust boundaries and production release gates.
 See [VALIDATION.md](VALIDATION.md) for executed checks and their limits.
+See [ROADMAP.md](ROADMAP.md) for the revised auto-research target: native Harbor
+Claude Code, repository history and internet access, three dataset splits, and a
+submission ID backed by source/configuration retained in Gym. Its status table
+separates planned changes from the current fixture described below.
 
 ## Layout
 
@@ -26,6 +30,12 @@ fixture. It is useful for verifying the complete research/submission lifecycle;
 it does **not** produce official benchmark results. Research BPB is labelled dev
 feedback. Verifier reward means submission validity only. Formal BPB, CORE and
 leaderboard rank are never filled with fixture scores.
+
+For ClimbMix, the data adapter follows the native default: training shards precede
+the last shard, and `shard_06542.parquet` supplies research validation. Existing
+`dev_path`/`dev_bpb` names refer to that validation split. Final submission is a
+receipt; Gym retains the full plugin source/configuration and resolves the
+submission ID when dispatching final training.
 
 ## Install and test
 
