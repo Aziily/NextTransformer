@@ -21,7 +21,11 @@ allows shard 06541 in the full training prefix and rejects validation/training
 overlap. Final-dispatch coverage recreates the service/backend from durable state
 and completes a fresh CPU fixture run using the submission receipt, with matching
 candidate identity. Formatting, undefined/unused-name checks and documentation
-links also passed. The Docker and full repository results above are from the
+links also passed. After rebasing onto the current upstream main for PR submission,
+the Gym suite again passed all 29 tests and the repository suite passed 532 tests
+with 131 skipped and one existing tensor conversion warning. Change classification
+against both origin/main and upstream/main reported no training-contract or
+published-method fingerprint changes. The Docker results above are from the
 earlier native-plugin baseline; no production ClimbMix or GPU run was performed
 for this follow-up.
 
