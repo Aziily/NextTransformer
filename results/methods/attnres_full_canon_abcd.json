@@ -16,9 +16,9 @@
  "architecture": {
   "kind": "custom",
   "nodes": [
-   "Embedding + earlier blocks",
+   "Earlier blocks",
    "Depth softmax",
-   "Canon conv (A/C)",
+   "Canon A/C",
    "Attn / FFN + Canon B, D"
   ],
   "loop": false

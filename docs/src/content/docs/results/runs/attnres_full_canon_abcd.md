@@ -26,8 +26,9 @@ parameters**: Full AttnRes over 23 depth groups and 138 Canon layers.
 
 Compared with Block AttnRes, the closest built-in method, CORE ×100 is 2.00 points higher. It improved or matched 18
 of the 22 CORE tasks. The largest gains were BoolQ (+28.41 centered points), SQuAD (+11.59) and COPA (+6.00). The
-largest losses were Winograd (−5.86), BIG-bench CS Algorithms (−5.83) and AGI Eval LSAT-AR (−4.89). Compared with
-mHC, CORE ×100 is 0.66 points higher.
+largest losses were Winograd (−5.86), BIG-bench CS Algorithms (−5.83) and AGI Eval LSAT-AR (−4.89). BoolQ alone
+contributes 1.29 of the 2.00 points; over the other 21 tasks, the mean is 0.74 points higher. Compared with mHC, CORE
+×100 is 0.66 points higher, and 0.47 points over the 21 tasks without BoolQ.
 
 Periodic validation BPB is 0.00244 lower than Block AttnRes's and 0.00115 lower than mHC's. At selection, after 2,000
 updates, NextT-Gym had measured −0.00380 dev BPB against Block AttnRes. Every value comes from one seed and is not a

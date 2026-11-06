@@ -28,7 +28,7 @@ AttnRes-Canon（`attnres_full_canon_abcd`）即 Full AttnRes 加上 Canon 层 A�
 - 提升最多：BoolQ（中心化后 +28.41 分）、SQuAD（+11.59）、COPA（+6.00）；
 - 落后最多：Winograd（−5.86）、BIG-bench CS Algorithms（−5.83）、AGI Eval LSAT-AR（−4.89）。
 
-与 mHC 相比，CORE 高 0.66 分。
+这 2.00 分中有 1.29 分来自 BoolQ 一项；在其余 21 个任务上，平均高 0.74 分。与 mHC 相比，CORE 高 0.66 分；不计 BoolQ，在其余 21 个任务上平均高 0.47 分。
 
 周期验证 BPB 比 Block AttnRes 低 0.00244，比 mHC 低 0.00115。选型时训练到第 2,000 步，NextT-Gym 在 dev 集上测得与 Block AttnRes 的差距为 −0.00380 BPB。以上均为单种子观测，不构成统计意义上的排名。
 
