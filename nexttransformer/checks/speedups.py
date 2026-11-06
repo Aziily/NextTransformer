@@ -32,9 +32,9 @@ FAMILIES = ("gdn", "moba_hybrid", "deeploop", "mhc", "ouro", "mla_nope", "residu
 SPARSE_KERNEL = ("moba", "moba_hybrid", "nsa")
 KEPT = ("loss", "lm_loss", "aux_loss", "grad_norm", "val_bpb")
 # Checkpoint entries that differ between two runs of identical results: timing, what a resumed run evaluated
-# once more, and the identity of the software, which records the flag itself.
+# once more, and the identity of the software, which records the flag itself and the commit of each checkout.
 VOLATILE = ("training_seconds", "evaluation_seconds", "evaluation_forward_flops", "smoke_val_steps",
-            "reference_source_hash", "native_source_sha256", "software/speedups")
+            "reference_source_hash", "native_source_sha256", "software/speedups", "software/git_commit")
 
 
 def train(name, args, repo=REPO, method=ANCHOR, steps=34, speedups="", micro=16, deterministic=False, fresh=True, extra=()):
