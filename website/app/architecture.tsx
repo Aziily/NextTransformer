@@ -589,8 +589,10 @@ export default function Architecture({ methodId, large = false, nodes, loop = tr
       break;
     }
     case 'gsa_qknorm':
-      viewBox = '0 96 600 150';
+      viewBox = '0 80 600 166';
       body = <>
+        <Text x={514} y={104} size={14} anchor="end" weight={600} color={C.purple}>v</Text>
+        <Path d="M524 86V110" color={C.purple}/>
         <Box x={20} y={116} w={130} h={56} title="q, k" sub="QK-norm · SiLU" tone="blue"/>
         <Path d="M152 144H170" color={C.purple}/>
         <Box x={176} y={116} w={130} h={56} title="Key slots" sub="64 slots · gated" tone="purple"/>
