@@ -221,7 +221,9 @@ def lm_forward(self, idx, targets=None, kv_cache=None, loss_reduction="mean"):
 
 
 def readout(self, x, backout):
-    if not (getattr(self, "_fused_head", False) and bf16(x)): return ORIGINAL["readout"](self, x, backout)
+    """Uncapped logits go only to the shared `_token_loss`; a class with its own receives the capped ones it expects."""
+    if not (getattr(self, "_fused_head", False) and bf16(x) and type(self)._token_loss is token_loss):
+        return ORIGINAL["readout"](self, x, backout)
     if backout is not None: x = x-self.backout_lambda.to(x.dtype)*backout
     logits = self.lm_head(backbone.norm(x))[..., :self.config.vocab_size]
     self._record("head", tokens=x.shape[0]*x.shape[1])

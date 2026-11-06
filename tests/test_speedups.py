@@ -2,6 +2,10 @@
 
 Skipped without CUDA. A difference here means a patched run no longer reproduces the reference path.
 """
+from pathlib import Path
+import subprocess
+import sys
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -245,6 +249,41 @@ def test_capped_cross_entropy(mean):
     upstream = torch.rand((), device="cuda") if mean else torch.rand(n, device="cuda")/n
     eager = grads(lambda t: F.cross_entropy(15*torch.tanh(t.float()/15), targets, ignore_index=-1, reduction=reduction), logits, upstream=upstream)
     for a, b in zip(eager, grads(lambda t: K.CappedCrossEntropy.apply(t, targets, mean), logits, upstream=upstream)): identical(a, b)
+
+
+OWN_LOSS = """
+from dataclasses import replace
+import torch, torch.nn.functional as F
+from nexttransformer.models.config import debug_config
+from nexttransformer.models.lm import ReferenceLM, build_model
+from nexttransformer.runtime import speedups
+
+class OwnLoss(ReferenceLM):
+    @staticmethod
+    def _token_loss(logits, targets):
+        return F.cross_entropy(logits.flatten(0, 1), targets.flatten(), ignore_index=-1, reduction="none").reshape_as(targets)
+
+config = replace(debug_config("dense_full", width=256, sequence_len=256), heads=2, vocab_size=32768)
+models = []
+for cls in (ReferenceLM, OwnLoss):
+    model = build_model(config, "cuda", seed=0)
+    with torch.no_grad(): model.lm_head.weight.mul_(400)  # logits well inside the soft cap's range
+    model.__class__ = cls
+    models.append(model.train())
+torch.manual_seed(0)
+idx = torch.randint(0, config.vocab_size, (8, config.sequence_len), device="cuda")
+targets = torch.roll(idx, -1, 1)
+before = [float(m(idx, targets).detach()) for m in models]
+speedups.install("readout")
+after = [float(m(idx, targets).detach()) for m in models]
+assert before == after and speedups.COUNTS == {"readout": 1}, (before, after, speedups.COUNTS)
+"""
+
+
+def test_readout_keeps_a_model_class_with_its_own_token_loss():
+    """`install` patches the process, so this runs in its own interpreter."""
+    out = subprocess.run([sys.executable, "-c", OWN_LOSS], cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-3000:]
 
 
 @pytest.mark.parametrize("kind", ["zipf", "uniform", "one"])
