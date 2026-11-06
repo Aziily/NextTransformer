@@ -72,7 +72,9 @@ def test_scope_keeps_the_contract_and_published_evidence_fixed():
         ("M", "nanochat/dataloader.py"), ("M", DOCS+"arena/rules.md"), ("A", "results/runs/ring.json"),
         ("M", "results/runs/nsa.json"), ("A", "evidence/costs/ring/ring.json"),
         ("A", "results/arena/ring.json"), ("D", "results/arena/circle-loop.json"), ("A", "results/methods/ring.json"),
-        ("A", DOCS+"results/runs/ring.md"), ("M", DOCS+"methods/sources.md"), ("M", "README.md")])}
+        ("A", DOCS+"results/runs/ring.md"), ("M", DOCS+"methods/sources.md"), ("M", "README.md"),
+        ("M", ".github/assets/readme/results-en.svg"), ("D", ".github/assets/readme/results-zh.svg"),
+        ("M", ".github/workflows/ci.yml")])}
     assert verdicts == {
         "nexttransformer/models/ring.py": "ok", "nexttransformer/models/registry.py": "review",
         "nexttransformer/models/backbone.py": "blocked", "nexttransformer/evaluation/formal.py": "blocked",
@@ -80,7 +82,9 @@ def test_scope_keeps_the_contract_and_published_evidence_fixed():
         "results/runs/ring.json": "ok",
         "results/runs/nsa.json": "blocked", "evidence/costs/ring/ring.json": "ok",
         "results/arena/ring.json": "ok", "results/arena/circle-loop.json": "blocked", "results/methods/ring.json": "ok",
-        DOCS+"results/runs/ring.md": "ok", DOCS+"methods/sources.md": "ok", "README.md": "review"}
+        DOCS+"results/runs/ring.md": "ok", DOCS+"methods/sources.md": "ok", "README.md": "review",
+        ".github/assets/readme/results-en.svg": "review", ".github/assets/readme/results-zh.svg": "blocked",
+        ".github/workflows/ci.yml": "blocked"}
 
 
 def test_scope_allows_a_calibration_refresh_but_not_a_model_change():
