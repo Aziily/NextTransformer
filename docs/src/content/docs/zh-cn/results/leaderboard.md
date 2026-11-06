@@ -5,7 +5,7 @@ description: 同一参考协议下完成的正式训练，以及各方法与 Den
 
 [交互式排行榜](https://interactive-active-ai.github.io/NextTransformer/#leaderboard)支持回放训练过程、查看学习曲线，以及展开全部 CORE 任务。下表来自 `results/` 的运行记录，与 `python -m nexttransformer.export_run --summary` 使用相同的数据。
 
-验证 BPB 取第 46,875 次更新的定期测量；CORE 显示为原分数乘以 100。Δ 表示与同一检查点的完整注意力 **Dense Baseline** 相比的差值。BPB 越低越好，CORE 越高越好。
+验证 BPB 取第 46,875 次更新的定期测量；CORE 显示为原分数乘以 100。Δ 表示与同一检查点的完整注意力 **Dense Baseline** 相比的差值。BPB 越低越好，CORE 越高越好。各行按 CORE 排序。竞技场参赛作品（自动研究）只按 CORE 排名，验证 BPB 只显示、不排名。
 
 <!-- generated:leaderboard -->
 | 模型 | 模型族 | 验证 BPB ↓ | Δ BPB | CORE ↑ | Δ CORE | 训练 GFLOPs/token |

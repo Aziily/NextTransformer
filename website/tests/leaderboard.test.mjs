@@ -45,3 +45,13 @@ test('experiment preference unifies sources by latest record without selecting t
  assert.deepEqual(preferredRuns([older,newer,partial]).map(r=>r.id),['b','partial']);
  assert.equal(preferredRuns([older,newer],true).length,2);
 });
+
+test('a core-only run ranks on CORE and is left out of the validation BPB ranking',()=>{
+ const only=run=>run.id==='a';
+ const core=leaderboardEntries([a,b],'core','final',undefined,only);
+ assert.deepEqual(core.map(e=>[e.run.id,e.rank]),[['b',1],['a',2]]);
+ const val=leaderboardEntries([a,b],'val','final',undefined,only);
+ assert.deepEqual(val.map(e=>[e.run.id,e.rank]),[['b',1],['a',undefined]]);
+ assert.equal(val[1].val,.7);
+ assert.ok(val[1].coreOnly&&!val[0].coreOnly);
+});
