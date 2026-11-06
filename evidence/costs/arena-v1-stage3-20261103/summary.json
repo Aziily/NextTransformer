@@ -1,0 +1,30 @@
+{
+  "created_at": "2026-11-02T20:16:49.864180+00:00",
+  "source_hash": "f5e46218d8e8065f51107b0c4dab3d0a91468be78b6bf5a40f05140144059df7",
+  "formula_version": "reference-aten-math-v2",
+  "torch": "2.9.1+cu128",
+  "rows": [
+    {
+      "method": "attnres_canon_abcd",
+      "status": "theoretical_preflight_passed",
+      "parameters": 1357154568,
+      "ffn": 6144,
+      "physical_layers": 23,
+      "core_layers": 9,
+      "flops_per_token": 4688124092.868806,
+      "relative_error": 0.0033656735418525763,
+      "elapsed_seconds": 4.464143079705536
+    },
+    {
+      "method": "attnres_full_canon_abcd",
+      "status": "theoretical_preflight_passed",
+      "parameters": 1357154568,
+      "ffn": 6144,
+      "physical_layers": 23,
+      "core_layers": 9,
+      "flops_per_token": 4695109917.384431,
+      "relative_error": 0.004860799605393984,
+      "elapsed_seconds": 4.499503031838685
+    }
+  ]
+}

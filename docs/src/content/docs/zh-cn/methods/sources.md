@@ -80,8 +80,9 @@ DSA、QSA 和 Seer 均从随机初始化开始，在总计 46,875 次更新中�
 | `hc` | [Hyper-Connections](https://arxiv.org/html/2409.19606v3)：动态 HC，扩展倍数 4 | 每个注意力和 FFN 子层各有映射。初始化时子层 k 读取第 `k mod 4` 路，静态 `B = 1`、`A_m = e_(k mod n)`、`A_r = I`，动态投影为零，`s_α = s_β = 0.01`。嵌入复制到四路，在最终归一化前求和，每个分支宽 1536。动态映射采用无参数 RMSNorm 和无权重衰减的辅助 AdamW 参数组。初始化时等价于 `residual_standard`。 |
 | `mhc` | [mHC](https://arxiv.org/html/2512.24880v2) 式 7–9：四路，门尺度 0.01，20 次 Sinkhorn-Knopp 迭代 | 展平 4 × 1536 路表示，经无参数 RMSNorm 和 6144 × 24 投影得到读、写和残差 logits。`H_pre = σ`、`H_post = 2σ`；`H_res` 在对数域对指数值执行 20 次先列后行的归一化，避免下溢除零。投影从零开始，静态偏置沿用 HC，系数至少为 FP32。迭代后行和为 1，列和近似 1。校准后的 FFN 宽度为 6016。 |
 | `attnres` | [Attention Residuals](https://arxiv.org/abs/2603.15031v1)：Block AttnRes，约 8 组 | 以注意力和 FFN 子层数计深度，各子层及最终读出使用零初始化的伪查询。键用无参数 RMSNorm。23 块划为 3、3、3、3、3、3、3、2；输入源为嵌入、已完成的组之和及当前部分和。 |
+| `attnres_full_canon_abcd` | Full AttnRes（[Attention Residuals](https://arxiv.org/abs/2603.15031v1)，每块一组），并在四个位置（A–D）加入 [Canon 层](https://arxiv.org/abs/2512.17351)；由 NextT-Gym 在 arena v1 中找到 | 每个块自成一组，所以每个子层分别读取嵌入和此前每个块的输出，而不是组之和。Canon 层是对最近四个位置的因果逐通道卷积，加回到输入上；权重从零开始，所以模型初始时就是 Full AttnRes。Canon-A/C 作用于每个子层经深度读取后的输入，在子层的 RMSNorm 之前；Canon-B 作用于 q、k、v，在旋转位置编码和 QK-norm 之前；Canon-D 作用于 MLP 的隐藏激活，在平方 ReLU 之前。卷积权重用 AdamW 训练（骨干中非矩阵参数所在的组）。插件 `nexttransformer/methods/attnres_full_canon_abcd`；Canon AttnRes 的代码在辅助模块 `nexttransformer/methods/attnres_canon_abcd` 中。 |
 
-四种残差方法与 `dense_full` 共用完整 MHA 骨干。对 Standard Residual 的配对差值应与相对 Dense 的总体差值分开报告。原论文在其他规模和 MoE 骨干上的增益不能直接推算本基准结果。
+残差家族的各方法与 `dense_full` 共用完整 MHA 骨干。对 Standard Residual 的配对差值应与相对 Dense 的总体差值分开报告。原论文在其他规模和 MoE 骨干上的增益不能直接推算本基准结果。
 
 ## 混合架构
 

@@ -1,0 +1,72 @@
+{
+ "id": "attnres-canon",
+ "name": "AttnRes-Canon",
+ "methodId": "attnres_full_canon_abcd",
+ "runIds": [
+  "attnres_full_canon_abcd"
+ ],
+ "arenaProtocol": "arena-v1",
+ "status": "complete",
+ "statusNote": "",
+ "submitted": "2026-11-06",
+ "verification": "self-reported",
+ "researcher": {
+  "people": [
+   {
+    "name": "ggeeyyi",
+    "handle": "ggeeyyi",
+    "role": "Operator: approved each stage's plan, its preregistered rules and its GPU budget, and set the stopping points; chose no candidate and wrote no method code"
+   }
+  ],
+  "llms": [
+   {
+    "name": "Claude Opus",
+    "version": "claude-opus-5-5",
+    "role": "Researcher and operator's agent: drafted the arena v1 plan and every stage's rules, proposed, wrote and verified every candidate in NextT-Gym, launched and monitored the runs, analyzed them, ported the selected candidates to method plugins, and audited and exported the formal run. It had read the published results in results/runs/ and chose every candidate with dev-split values only (decision D5 of the research plan)"
+   },
+   {
+    "name": "Codex",
+    "version": "gpt-6-astra (reasoning effort xhigh)",
+    "role": "Reviewed the Stage 3 code changes (plugins, metering, disclosure) and the formal-launch scripts before any GPU job"
+   }
+  ],
+  "framework": {
+   "name": "NextT-Gym",
+   "version": null,
+   "url": null,
+   "note": "The research gym in nextt_gym/, driven through its MCP tools; one 8-GPU job per run or segment. It is not in upstream main: each research run used a private development commit, listed in bundles.json of the research evidence (traceUrl), whose commit also holds a copy of nextt_gym/. The research ran trusted agent code without process isolation (level G3): the agent's checkout included results/, and the gym's training processes could read the validation shard; selection used the dev split only, as preregistered."
+  },
+  "involvement": "L1",
+  "involvementNote": "Operations only, as preregistered for Stage 2 (decision D5 of the research plan): the person approved each stage's plan, its preregistered rules and its GPU budget as the agent proposed them, settled two operational questions about the gym (restarting a segment after a failure, and that the result archive also covers the imported reference runs) and set the stopping points. The person chose no candidate and gave no directional hint; the agent proposed, implemented, ran and selected every candidate by the preregistered rule. A web search was used only to look up the Canon paper's citation while porting; the candidates came from the model's knowledge of the literature. For the formal run the person authorized the launch and its compute, asked that the preregistration PR be closed and the run trained from the fork, and renewed the cluster quota for the second segment."
+ },
+ "research": {
+  "start": "2026-10-30",
+  "end": "2026-11-02",
+  "baseCommit": "6f2c422910274f003cabf432fec6c27c565d5258",
+  "candidatesTrained": 12,
+  "formalAttempts": 2,
+  "formalNote": "Two launches of the preregistered configuration (fork commit bf54f0d, code bundle SHA-256 c9d3f98c…), 32 H20 GPUs (4 nodes x 8), 32 ranks, micro-batch 16, no accumulation; neither failed. The first trained updates 1-39,500 and was stopped by the cluster's 37-hour job limit, as planned; its newest complete checkpoint was 39,000. The second resumed from that checkpoint, re-ran updates 39,001-39,500 (the replayed events are archived and not counted) and finished at 46,875. Preregistration: proposal issue #30, filed on 2026-11-06 after the formal run, records the fork commit, configuration and cost proof of pull request #10. #10 was opened on 2026-11-03 06:36 UTC with the same commit, configuration and cost proof, the rule at the time, and closed four minutes later at the person's request, before the formal launch at 11:00 UTC; proposal issues replaced pull requests for preregistration on 2026-11-04.",
+  "gpuHours": 2135.06,
+  "hardware": "8 x H20 per research run; 32 H20 (4 nodes x 8) for the formal run",
+  "computeNote": "Research: 701.72 GPU-hours, metered by NextT-Gym over 37 runs (33 trained at least one update): platform GPU-hours, pod time x GPUs as the cluster recorded it (queueing excluded). Scales: S x4, C x13, M x16. Formal: 1,433.34 GPU-hours, pod time x 32 GPUs of the two segments as the cluster recorded it (133,204 s and 28,047 s, queueing excluded). LLM tokens and API cost: not metered. The base commit belongs to the private development history; the code bundle of every research run, with its commit and SHA-256, is listed in bundles.json of the research evidence (traceUrl). Not included: the Stage 3 porting checks of 2026-11-03 (about 42.1 platform GPU-hours) and the bounded four-node check before the formal run (about 19 minutes on 32 GPUs).",
+  "internet": true,
+  "selectionSignal": [
+   "dev-bpb"
+  ]
+ },
+ "novelty": {
+  "closestPrior": [
+   "Attention Residuals (Full AttnRes)",
+   "Canon layers (Physics of Language Models, Part 4.1)",
+   "Block AttnRes (attnres)"
+  ],
+  "statement": "Full Attention Residuals and Canon layers at all four positions in one model. Canon-A/C act on the input that each sublayer reads over depth, so the causal short convolution mixes neighbouring tokens of the depth mixture; Canon-B on q, k and v and Canon-D on the MLP hidden as in the Canon paper. Neither paper combines the two; the Canon paper does not use depth attention."
+ },
+ "artifacts": {
+  "checkpointUrl": "https://huggingface.co/GY2233/nextt-arena-attnres-full-canon-abcd/blob/main/model.pt",
+  "logsUrl": "https://huggingface.co/GY2233/nextt-arena-attnres-full-canon-abcd/tree/main/logs",
+  "traceUrl": "https://github.com/ggeeyyi/NextTransformer/tree/25c553d9e03e43334c7fdf3171736b5a8bf42413/evidence/checks/arena-v1",
+  "historyUrl": null,
+  "codeUrl": "https://github.com/Interactive-Active-AI/NextTransformer/tree/main/nexttransformer/methods/attnres_full_canon_abcd"
+ }
+}

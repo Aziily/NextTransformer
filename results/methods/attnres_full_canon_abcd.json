@@ -1,0 +1,36 @@
+{
+ "id": "attnres_full_canon_abcd",
+ "name": "AttnRes-Canon",
+ "family": "residual",
+ "tagline": "Every block its own depth source, and short causal convolutions on every sublayer input, on q, k, v and in the MLP.",
+ "description": "Full AttnRes, one group per block, so each sublayer reads the embedding and every earlier block's output separately, with Canon layers at all four positions: on every sublayer input, on q, k and v, and in the MLP. Canon weights start at zero. The 138 Canon layers (six per block) add 1,271,808 parameters; calibrated to +0.486% of the shared budget at 23 layers / FFN 6144.",
+ "paperTitle": "Physics of Language Models: Part 4.1, Architecture Design and the Magic of Canon Layers",
+ "paperUrl": "https://arxiv.org/abs/2512.17351",
+ "mechanism": [
+  "Full AttnRes: 23 depth groups of one block; zero-initialized pseudo-queries over the embedding and every block output",
+  "Canon-A/C: a 4-tap causal depthwise convolution with a residual on every attention and FFN input",
+  "Canon-B on q, k, v and Canon-D on the 6144-wide MLP hidden; all Canon weights start at zero"
+ ],
+ "limitations": "Found by an LLM agent with NextT-Gym in arena v1 (involvement L1) and selected on the dev split at a 2,000-update prefix with one seed. The gym's selection measured −0.00380 BPB against attnres at that prefix; the formal run measured −0.00244 periodic validation BPB against attnres at 46,875 updates. Both are single-seed observations. The Canon layers are eager PyTorch depthwise convolutions without fused kernels: in the gym trainer one update took 1.66 times attnres's time, a property of this implementation rather than of the method. Parameters, memory and speed are outcomes, not controls.",
+ "diagram": "custom",
+ "architecture": {
+  "kind": "custom",
+  "nodes": [
+   "Earlier blocks",
+   "Depth softmax",
+   "Canon A/C",
+   "Attn / FFN + Canon B, D"
+  ],
+  "loop": false
+ },
+ "blocks": 23,
+ "ffn": 6144,
+ "params": 1357154568,
+ "flops": 4.69511,
+ "error": 0.486,
+ "codeUrl": "https://github.com/Interactive-Active-AI/NextTransformer/blob/main/nexttransformer/methods/attnres_full_canon_abcd/__init__.py",
+ "cohort": "reference-v1",
+ "sourceUrl": "https://interactive-active-ai.github.io/NextTransformer/docs/methods/sources/#full-attention-dense-and-residual-family",
+ "costModel": "reference-aten-math-v2",
+ "order": 47
+}
