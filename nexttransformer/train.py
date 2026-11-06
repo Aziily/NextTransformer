@@ -253,6 +253,9 @@ def parse(argv=None):
                              'uses the reference path, whose prompts need not be a multiple of the kernel block')
     parser.add_argument("--deterministic-attention", action="store_true",
                         help="require deterministic PyTorch kernels for SDPA; excludes FA3 and SDPA flash")
+    parser.add_argument("--speedups", default="",
+                        help="fused execution of shared components (nexttransformer/runtime/speedups): \"all\", "
+                             "\"exact\" (bit-identical to the default path) or a comma list")
     args = parser.parse_args(argv)
     if not args.micro_batch: parser.error("--micro-batch (or MICRO_BATCH / site micro_batch) is required")
     args.micro_batch = int(args.micro_batch)
@@ -326,6 +329,12 @@ def main(argv=None):
 
     if args.sparse_backend != "reference" and not config.has_sparse:
         raise ValueError("--sparse-backend applies to sparse methods only")
+    if args.speedups:
+        from nexttransformer.runtime import speedups
+        speedups.install(args.speedups)
+        if speedups.active("data") and shares == 1:  # shared streams also skip rows on the CPU
+            from nexttransformer.runtime.speedups.prefetch import PrefetchedStream
+            stream = PrefetchedStream(stream)
     model = build_model(config, device, seed=p.seed)
     model.set_sparse_backend(args.sparse_backend)
     # The trainable set (Ouro's gate-only stage) fixes the optimizer groups and DDP reducer.
@@ -339,6 +348,7 @@ def main(argv=None):
     wrapped = wrap()
     optimizer = build_optimizer(model, train_config)
     software = software_identity(config, args.sparse_backend)
+    if args.speedups: software.update(speedups=args.speedups)
     state = dict(step=0, input_tokens=0, next_global_sequence=0, data_manifest_sha256=manifest_hash,
                  budget=BudgetState().state_dict(), theory_flops=0, training_seconds=0., evaluation_seconds=0.,
                  evaluation_forward_flops=0, smoke=smoke, mode=mode, smoke_val_steps=[], software=software,
