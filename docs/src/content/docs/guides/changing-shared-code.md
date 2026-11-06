@@ -30,6 +30,9 @@ two checks:
   size on the base branch and on the pull request, runs one forward and backward pass, and compares the loss, every
   parameter and gradient, the parameter names and the model hash. All must be identical. This covers CPU code paths;
   a change to a GPU-only kernel also needs a bounded GPU check.
+- **Execution speedups.** `--speedups` replaces 13 shared functions at run time and refuses to start once any of
+  them changes. Editing one does not block your pull request; the fast tests warn, and the patch is reviewed
+  separately (see `nexttransformer/runtime/speedups/README.md`).
 - **Full audit.** A maintainer runs the *Full audit* workflow, which re-audits the affected methods with the PyTorch
   build the proofs record and compares every operator count with the existing proofs. Only the source fingerprints
   may change. The maintainer then commits the regenerated proofs to the pull request and merges it.

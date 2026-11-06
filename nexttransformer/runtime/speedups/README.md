@@ -34,6 +34,31 @@ comparable bit for bit:
 On a run of `dense_full`, the loss of `all` stays within what two runs of the default path differ by,
 since SDPA flash is not deterministic either. Use `exact` where a run must match the default path.
 
+## Off by default; formal runs accept `exact`
+
+Nothing changes unless `--speedups` is given. Formal runs accept only `exact` or a comma list of its parts,
+which reproduce the default path bit for bit; the trainer refuses `all`, `cudnn` and `merge` with `--formal`.
+The selection is part of the segment's software identity: a resumed segment must use the same one, the audit
+rejects formal segments with anything outside `exact`, and the exported result records it as `proof.speedups`.
+
+## Gains depend on the GPU
+
+The gain follows the share of the step that is memory-bound shell work, which differs by GPU. Measured by the
+maintainers on one node of eight 80 GB Ampere-generation GPUs (torch 2.9.1, SDPA flash, no FlashAttention-3),
+reference and optimized runs alternating:
+
+| `dense_full`, 8 GPUs, micro batch 16 | ms/update | speedup | peak memory |
+|---|---|---|---|
+| default | 4384 | 1.00× | 75.0 GiB |
+| `exact` | 3183 | 1.38× | 63.1 GiB |
+| `exact,merge` | 3128 | 1.40× | |
+| `exact,cudnn` | 3300 | 1.33× | |
+| `all` | 3244 | 1.35× | 60.9 GiB |
+
+On one of these GPUs with micro batch 8, `all` gave 1.12× (`mhc`) to 1.46× (`ouro`) across eight methods and
+lowered peak memory by 6–17 GiB. On these GPUs cuDNN attention is slower than SDPA flash, so `exact` (or
+`exact,merge` in research) is the better choice; measure before relying on `cudnn` elsewhere.
+
 ## Reproduce
 
 `python -m nexttransformer.checks.speedups` covers the GPU tests, alternating timing, bit identity across the
