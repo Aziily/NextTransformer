@@ -168,7 +168,15 @@ accelerate launch --config_file launch/accelerate.yaml \
 <p><img src="https://img.shields.io/badge/Multimodal-1BAF7A?style=flat-square" alt="多模态"> 作者 <a href="https://github.com/Enderfga">@Enderfga</a></p>
 <p>冻结的 SigLIP2 图像 token 与文本交错排进 8,192 长度的上下文，NextTransformer 的每种方法都不用改动就能直接训练，训练算力对齐到 1% 以内。第一项研究经过预注册，探讨混合架构从哪里读取图像的二维布局。</p>
 </td>
-<td width="50%" align="center">
+<td width="50%" valign="top">
+<a href="https://github.com/DAGroup-PKU/ResearchBoost-Agent"><img src="https://raw.githubusercontent.com/DAGroup-PKU/ResearchBoost-Agent/600043885d7eb3e9326725b47e966e273712dfe2/docs/assets/readme/banner-zh.jpg" alt="ResearchBoost-Agent：用 AI 加速推动 AI 进步的研究" width="100%"></a>
+<h3><a href="https://github.com/DAGroup-PKU/ResearchBoost-Agent">ResearchBoost-Agent</a></h3>
+<p><img src="https://img.shields.io/badge/%E8%AE%AD%E7%BB%83%E5%8A%A0%E9%80%9F-8C0000?style=flat-square" alt="训练加速"> 作者 <a href="https://github.com/AI4AI-for-Anything">AI4AI for Anything</a>，贡献者 <a href="https://github.com/henry-y">@henry-y</a></p>
+<p>自动分析、优化并验证 AI 训练代码的 agent。它为 NextTransformer 贡献了可选的 <code>--speedups</code>（<a href="https://github.com/Interactive-Active-AI/NextTransformer/pull/26">#26</a>），把所有方法共用的外壳融合成更少的 kernel。其中 <code>exact</code> 模式与默认路径逐位一致，可用于正式运行，在单机 8 卡上把 <code>dense_full</code> 的训练提速 1.38 倍。</p>
+</td>
+</tr>
+<tr>
+<td colspan="2" align="center">
 <h3>你的项目</h3>
 <p>做了基于 NextTransformer 代码或协议的项目？欢迎在 <a href="https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell">Show and tell</a> 分享，或提交 pull request 加一张卡片，并附一张宽幅横幅图。</p>
 <sub>收录的项目需公开，并在 README 中注明基于 NextTransformer。</sub>

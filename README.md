@@ -177,7 +177,15 @@ Community projects that extend NextTransformer.
 <p><img src="https://img.shields.io/badge/Multimodal-1BAF7A?style=flat-square" alt="Multimodal"> by <a href="https://github.com/Enderfga">@Enderfga</a></p>
 <p>Every NextTransformer method on frozen SigLIP2 image tokens interleaved with text at an 8,192-token context, compute-matched within 1%. Its first study, pre-registered, asks where hybrid backbones read the 2D layout of an image.</p>
 </td>
-<td width="50%" align="center">
+<td width="50%" valign="top">
+<a href="https://github.com/DAGroup-PKU/ResearchBoost-Agent"><img src="https://raw.githubusercontent.com/DAGroup-PKU/ResearchBoost-Agent/600043885d7eb3e9326725b47e966e273712dfe2/docs/assets/readme/banner-en.jpg" alt="ResearchBoost-Agent: AI that accelerates the research that advances AI" width="100%"></a>
+<h3><a href="https://github.com/DAGroup-PKU/ResearchBoost-Agent">ResearchBoost-Agent</a></h3>
+<p><img src="https://img.shields.io/badge/Training%20speedups-8C0000?style=flat-square" alt="Training speedups"> by <a href="https://github.com/AI4AI-for-Anything">AI4AI for Anything</a>, contributed by <a href="https://github.com/henry-y">@henry-y</a></p>
+<p>An agent that profiles, optimizes and validates AI training code. It contributed NextTransformer's opt-in <code>--speedups</code> (<a href="https://github.com/Interactive-Active-AI/NextTransformer/pull/26">#26</a>): fused kernels for the shell every method shares. Its <code>exact</code> mode reproduces the default path bit for bit, formal runs accept it, and it trains <code>dense_full</code> 1.38× faster on one eight-GPU node.</p>
+</td>
+</tr>
+<tr>
+<td colspan="2" align="center">
 <h3>Your project here</h3>
 <p>Built something on NextTransformer's code or protocol? Share it in <a href="https://github.com/Interactive-Active-AI/NextTransformer/discussions/categories/show-and-tell">Show and tell</a> or open a pull request that adds a card with a wide banner image.</p>
 <sub>Listed projects are public and say in their README that they build on NextTransformer.</sub>
