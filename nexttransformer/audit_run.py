@@ -26,6 +26,7 @@ from datetime import date
 from pathlib import Path
 
 from nexttransformer.protocol.spec import Protocol, TOKENIZER_SHA256
+from nexttransformer.runtime import speedups
 
 REPO = Path(__file__).resolve().parents[1]
 P = Protocol()
@@ -152,6 +153,8 @@ def audit(run, method):
             need(p["software"].get(k) == expected["software"][k], f"{name}: {k} differs from the expected source")
         need(not p.get("smoke"), f"{name}: smoke segment")
         need(p.get("admission", {}).get("mode", "formal") == "formal", f"{name}: research-mode segment")
+        selected = p["software"].get("speedups")
+        need(not selected or speedups.formal(selected), f"{name}: speedups {selected!r} are not bit-identical to the default path")
         need(p["world_size"]*p["micro_batch"]*p["accumulation"]*P.sequence_len == P.global_batch_tokens, f"{name}: batch layout")
         need(p["world_size"] in (8, 16, 32), f"{name}: unregistered world size {p['world_size']}")
         segments.append(dict(file=name, step=step, world=p["world_size"], micro=p["micro_batch"], accumulation=p["accumulation"]))

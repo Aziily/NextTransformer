@@ -60,6 +60,11 @@ build and still train; the trainer records stale or out-of-budget cost evidence,
 Leaderboard runs pass **`--formal`**: the configuration's cost proof must match the source and PyTorch build it was
 audited with, and every training segment must be formal.
 
+The opt-in execution speedups (`--speedups`, off by default) fuse the shared shell's kernels without changing what a
+method computes. Formal runs accept only **`--speedups exact`** or a selection of its parts, which reproduce the
+default path bit for bit; `all`, `cudnn` and `merge` change rounding and stay in research mode. Every segment of a
+run uses the same selection, and the exported result records it.
+
 ## Where to go next
 
 - [Compute accounting](../compute/) explains exactly what is counted.

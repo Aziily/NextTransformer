@@ -253,7 +253,17 @@ def parse(argv=None):
                              'uses the reference path, whose prompts need not be a multiple of the kernel block')
     parser.add_argument("--deterministic-attention", action="store_true",
                         help="require deterministic PyTorch kernels for SDPA; excludes FA3 and SDPA flash")
+    parser.add_argument("--speedups", default="",
+                        help="fused execution of shared components (nexttransformer/runtime/speedups), off by default: "
+                             "\"exact\" (bit-identical to the default path; the only choice formal runs accept), "
+                             "\"all\" (research only) or a comma list")
     args = parser.parse_args(argv)
+    if args.speedups:
+        from nexttransformer.runtime import speedups
+        try: speedups.selection(args.speedups)
+        except ValueError as exc: parser.error(str(exc))
+        if args.formal and not speedups.formal(args.speedups):
+            parser.error("formal runs accept only speedups inside \"exact\", which reproduce the default path bit for bit")
     if not args.micro_batch: parser.error("--micro-batch (or MICRO_BATCH / site micro_batch) is required")
     args.micro_batch = int(args.micro_batch)
     args.eval_batch = args.eval_batch or args.micro_batch
@@ -326,6 +336,12 @@ def main(argv=None):
 
     if args.sparse_backend != "reference" and not config.has_sparse:
         raise ValueError("--sparse-backend applies to sparse methods only")
+    if args.speedups:
+        from nexttransformer.runtime import speedups
+        speedups.install(args.speedups)
+        if speedups.active("data") and shares == 1:  # shared streams also skip rows on the CPU
+            from nexttransformer.runtime.speedups.prefetch import PrefetchedStream
+            stream = PrefetchedStream(stream)
     model = build_model(config, device, seed=p.seed)
     model.set_sparse_backend(args.sparse_backend)
     # The trainable set (Ouro's gate-only stage) fixes the optimizer groups and DDP reducer.
@@ -339,6 +355,7 @@ def main(argv=None):
     wrapped = wrap()
     optimizer = build_optimizer(model, train_config)
     software = software_identity(config, args.sparse_backend)
+    if args.speedups: software.update(speedups=args.speedups)
     state = dict(step=0, input_tokens=0, next_global_sequence=0, data_manifest_sha256=manifest_hash,
                  budget=BudgetState().state_dict(), theory_flops=0, training_seconds=0., evaluation_seconds=0.,
                  evaluation_forward_flops=0, smoke=smoke, mode=mode, smoke_val_steps=[], software=software,
@@ -352,8 +369,9 @@ def main(argv=None):
             if previous[key] != state[key]: raise ValueError(f"resume {key} differs from checkpoint")
         if previous.get("mode", "formal") != mode:  # checkpoints before research mode are formal
             raise ValueError(f"the run was started in {previous.get('mode', 'formal')} mode; resume it in that mode")
-        changed = sorted(k for k in software if k not in ("code_snapshot", "git_commit")
-                         and previous["software"].get(k) != software[k])
+        # "speedups" is compared in both directions: a segment may not drop the checkpoint's selection either.
+        changed = sorted(k for k in set(software) | {"speedups"} if k not in ("code_snapshot", "git_commit")
+                         and previous["software"].get(k) != software.get(k))
         if changed: raise ValueError(f"resume software differs from checkpoint: {changed}")
         state, state["software"] = previous, software
         state["mode"] = mode
@@ -492,7 +510,7 @@ def main(argv=None):
                 lm = model.last_lm_loss if model.last_lm_loss is not None else loss
                 aux = model.last_aux_loss if model.last_aux_loss is not None else torch.zeros((), device=device)
                 totals += torch.stack((lm.detach().double()/(accumulation*world), aux.detach().double()/(accumulation*world),
-                                       torch.tensor(float(x.numel()), device=device, dtype=torch.float64)))
+                                       x.new_full((), x.numel(), dtype=torch.float64)))  # filled on the device: a copy from the host would drain the queue
             # The rows of this stream that the other share keeps; afterwards every copy has the 8-rank state.
             t = time.perf_counter()
             if next(batches, None) is not None: raise RuntimeError("micro batches do not cover the stream's rows")

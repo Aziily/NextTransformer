@@ -23,6 +23,8 @@ description: 当改动涉及已发布方法运行的代码时会发生什么，�
 - **逐位比对。** `python -m nexttransformer.checks.golden --base origin/main` 在基础分支和 pull request 上分别以调试尺寸构建每个方法，
   各运行一次前向和反向，比较损失、每个参数和梯度、参数名以及模型哈希。所有内容都必须完全相同。这覆盖了 CPU 代码路径；只在 GPU
   上运行的 kernel 的改动还需要一次有界的 GPU 检查。
+- **执行加速。** `--speedups` 在运行时替换 13 个共享函数，其中任何一个改动后它都会拒绝启动。改动这些函数不会阻挡你的 pull request；
+  快速测试会给出警告，对应的补丁另行审阅（见 `nexttransformer/runtime/speedups/README.md`）。
 - **全量审计。** 维护者运行 *Full audit* 工作流，用证明所记录的 PyTorch 构建重新审计受影响的方法，并把每个算子计数与已有证明比较。
   只有源码指纹可以改变。之后维护者把重新生成的证明提交到该 pull request 并合并。
 
