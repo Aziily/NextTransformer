@@ -492,7 +492,7 @@ def main(argv=None):
                 lm = model.last_lm_loss if model.last_lm_loss is not None else loss
                 aux = model.last_aux_loss if model.last_aux_loss is not None else torch.zeros((), device=device)
                 totals += torch.stack((lm.detach().double()/(accumulation*world), aux.detach().double()/(accumulation*world),
-                                       torch.tensor(float(x.numel()), device=device, dtype=torch.float64)))
+                                       x.new_full((), x.numel(), dtype=torch.float64)))  # filled on the device: a copy from the host would drain the queue
             # The rows of this stream that the other share keeps; afterwards every copy has the 8-rank state.
             t = time.perf_counter()
             if next(batches, None) is not None: raise RuntimeError("micro batches do not cover the stream's rows")
