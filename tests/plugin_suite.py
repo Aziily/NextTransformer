@@ -24,7 +24,8 @@ PLUGINS = ("toy_gated_attention", "toy_glu", "toy_two_pass")
 
 
 def test_plugins_are_registered_after_the_built_in_methods():
-    assert set(PLUGINS) == PLUGIN_METHODS and METHODS == BUILTIN_METHODS + PLUGINS
+    # The test plugins join the repository's own plugins (nexttransformer/methods/), all in name order after the built-ins.
+    assert set(PLUGINS) <= PLUGIN_METHODS and METHODS == BUILTIN_METHODS + tuple(sorted(PLUGIN_METHODS))
     assert FAMILY["toy_two_pass"] == "looped" and FAMILY["toy_glu"] == "others"
     assert not (LINEAR | LOOPED) & PLUGIN_METHODS  # model rules stay built-in only
 

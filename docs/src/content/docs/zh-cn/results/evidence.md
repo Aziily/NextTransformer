@@ -9,7 +9,8 @@ description: 配置准入依据的算力凭证，以及正式运行结束后的�
 
 | 凭证集 | 用途 |
 |---|---|
-| `plugin-interface-20261031` | 当前凭证集，`configs/<family>/<method>.json` 指向这里的对应凭证 |
+| `plugin-interface-20261031` | 当前凭证集，内置方法的配置指向这里的对应凭证 |
+| `arena-v1-stage3-20261103` | arena v1 参赛方法 AttnRes-Canon（`attnres_full_canon_abcd`）的凭证及其 SSSL 锚点；它的配置指向这里。`summary.json` 中还列有未注册的 Block AttnRes 变体 |
 | `mhc-logsinkhorn-20261028` | mHC 改用对数域 Sinkhorn-Knopp 后的凭证集，计数与当前一致 |
 | `hybrid-kernels-20261026-release` | 已发布混合架构运行所用冻结源码的凭证集 |
 | `layout-20261024` | 软件包重组前的凭证集，模型哈希和计数与之后的版本一致 |

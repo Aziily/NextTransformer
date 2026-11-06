@@ -11,7 +11,8 @@ runs.
 
 | Proof set | Role |
 |---|---|
-| `plugin-interface-20261031` | **Current.** Every `configs/<family>/<method>.json` points to its proof here |
+| `plugin-interface-20261031` | **Current.** The configurations of the built-in methods point to their proofs here |
+| `arena-v1-stage3-20261103` | Proof of the arena v1 entry AttnRes-Canon (`attnres_full_canon_abcd`), with its SSSL anchor; its configuration points here. `summary.json` also lists the Block AttnRes variant, which is not registered |
 | `mhc-logsinkhorn-20261028` | Earlier set after mHC's log-space Sinkhorn-Knopp; counts equal the current set |
 | `hybrid-kernels-20261026-release` | Earlier set of the frozen source the published hybrid runs trained on |
 | `layout-20261024` | Earlier set from before the package reorganization; model hashes and counts equal later sets |

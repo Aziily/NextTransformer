@@ -28,6 +28,7 @@ GFLOPs per input token and the deviation from the SSSL anchor (4.67239832544785)
 | linear | `kda` | 23 | 6,144 | 1,412,126,344 | 4.692443 | +0.429% | joint |
 | linear | `retnet` | 23 | 6,144 | 1,410,077,320 | 4.630060 | -0.906% | joint |
 | residual | `attnres` | 23 | 6,144 | 1,355,882,760 | 4.679857 | +0.160% | joint |
+| residual | `attnres_full_canon_abcd` | 23 | 6,144 | 1,357,154,568 | 4.695110 | +0.486% | joint |
 | residual | `hc` | 23 | 6,144 | 1,356,235,700 | 4.698483 | +0.558% | joint |
 | residual | `mhc` | 23 | 6,016 | 1,353,550,818 | 4.674363 | +0.042% | joint |
 | residual | `residual_standard` | 23 | 6,144 | 1,355,810,568 | 4.674298 | +0.041% | joint |

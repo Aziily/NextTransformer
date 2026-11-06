@@ -11,6 +11,7 @@ description: 同一参考协议下完成的正式训练，以及各方法与 Den
 | 模型 | 模型族 | 验证 BPB ↓ | Δ BPB | CORE ↑ | Δ CORE | 训练 GFLOPs/token |
 |---|---|---:|---:|---:|---:|---:|
 | **[Dense Baseline](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/dense_full.json)** | 基线 | 0.6672 | — | 33.10 | — | 4.675 |
+| [AttnRes-Canon](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/attnres_full_canon_abcd.json) | 残差 | 0.6605 | -0.0067 | 35.99 | +2.90 | 4.695 |
 | [Manifold-Constrained Hyper-Connections · mHC](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/mhc.json) | 残差 | 0.6617 | -0.0055 | 35.33 | +2.23 | 4.674 |
 | [Hyper-Connections · HC](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/hc.json) | 残差 | 0.6644 | -0.0028 | 35.09 | +2.00 | 4.698 |
 | [Block Attention Residuals · AttnRes](https://github.com/Interactive-Active-AI/NextTransformer/blob/main/results/runs/attnres.json) | 残差 | 0.6630 | -0.0042 | 34.00 | +0.90 | 4.680 |

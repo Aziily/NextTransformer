@@ -3,7 +3,7 @@ title: Model zoo
 description: Every method in NextTransformer, by family.
 ---
 
-NextTransformer has 36 model cards in seven families. Every method runs in the same shell and is calibrated to
+NextTransformer has 37 model cards in seven families. Every method runs in the same shell and is calibrated to
 the same training compute. Open a method in the [observatory](https://interactive-active-ai.github.io/NextTransformer/#atlas) for its architecture diagram, curves and
 model card; "registered" methods have a card and a configuration but no published run.
 
@@ -34,6 +34,7 @@ model card; "registered" methods have a card and a configuration but no publishe
 | Residual | Block Attention Residuals · AttnRes (`attnres`) | [Attention Residuals](https://arxiv.org/abs/2603.15031) | published |
 | Residual | Hyper-Connections · HC (`hc`) | [Hyper-Connections](https://arxiv.org/abs/2409.19606) | published |
 | Residual | Manifold-Constrained Hyper-Connections · mHC (`mhc`) | [mHC: Manifold-Constrained Hyper-Connections](https://arxiv.org/abs/2512.24880) | published |
+| Residual | AttnRes-Canon (`attnres_full_canon_abcd`) | [Physics of Language Models: Part 4.1, Architecture Design and the Magic of Canon Layers](https://arxiv.org/abs/2512.17351) | published |
 | Hybrid | Hybrid GDN + MHA (`gdn_hybrid`) | [Gated Delta Networks: Improving Mamba2 with Delta Rule](https://arxiv.org/abs/2412.06464) | published |
 | Hybrid | Hybrid GDN + SWA (`gdn_hybrid_swa`) | [Gated Delta Networks: Improving Mamba2 with Delta Rule](https://arxiv.org/abs/2412.06464) | published |
 | Hybrid | Hybrid DeltaNet + MHA (`deltanet_hybrid`) | [Parallelizing Linear Transformers with the Delta Rule over Sequence Length](https://arxiv.org/abs/2406.06484) | published |
