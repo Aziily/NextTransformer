@@ -254,9 +254,16 @@ def parse(argv=None):
     parser.add_argument("--deterministic-attention", action="store_true",
                         help="require deterministic PyTorch kernels for SDPA; excludes FA3 and SDPA flash")
     parser.add_argument("--speedups", default="",
-                        help="fused execution of shared components (nexttransformer/runtime/speedups): \"all\", "
-                             "\"exact\" (bit-identical to the default path) or a comma list")
+                        help="fused execution of shared components (nexttransformer/runtime/speedups), off by default: "
+                             "\"exact\" (bit-identical to the default path; the only choice formal runs accept), "
+                             "\"all\" (research only) or a comma list")
     args = parser.parse_args(argv)
+    if args.speedups:
+        from nexttransformer.runtime import speedups
+        try: speedups.selection(args.speedups)
+        except ValueError as exc: parser.error(str(exc))
+        if args.formal and not speedups.formal(args.speedups):
+            parser.error("formal runs accept only speedups inside \"exact\", which reproduce the default path bit for bit")
     if not args.micro_batch: parser.error("--micro-batch (or MICRO_BATCH / site micro_batch) is required")
     args.micro_batch = int(args.micro_batch)
     args.eval_batch = args.eval_batch or args.micro_batch
@@ -362,8 +369,9 @@ def main(argv=None):
             if previous[key] != state[key]: raise ValueError(f"resume {key} differs from checkpoint")
         if previous.get("mode", "formal") != mode:  # checkpoints before research mode are formal
             raise ValueError(f"the run was started in {previous.get('mode', 'formal')} mode; resume it in that mode")
-        changed = sorted(k for k in software if k not in ("code_snapshot", "git_commit")
-                         and previous["software"].get(k) != software[k])
+        # "speedups" is compared in both directions: a segment may not drop the checkpoint's selection either.
+        changed = sorted(k for k in set(software) | {"speedups"} if k not in ("code_snapshot", "git_commit")
+                         and previous["software"].get(k) != software.get(k))
         if changed: raise ValueError(f"resume software differs from checkpoint: {changed}")
         state, state["software"] = previous, software
         state["mode"] = mode

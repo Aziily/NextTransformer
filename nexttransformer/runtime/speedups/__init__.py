@@ -11,6 +11,8 @@ audit, so published proofs and fingerprints stay valid.
     python -m nexttransformer.train ... --speedups norm,mlp,attention,residual,readout,embedding
 
 `install` refuses to run when a patched function no longer has the source it was written against.
+Speedups are off unless requested. Formal runs accept only selections inside `exact`; the trainer records
+the selection, and the audit and the exported result carry it.
 """
 import hashlib
 import inspect
@@ -64,14 +66,26 @@ def reviewed_functions():
             "sparse.SparseMixer._projections": sparse.SparseMixer._projections}
 
 
-def install(spec="all"):
-    """Activate the named patches once per process; returns the sorted active names."""
-    global _installed
+def selection(spec):
+    """The patch names a comma list selects, with `all` and `exact` expanded."""
     names = {name for name in spec.split(",") if name}
     if "all" in names: names = (names-{"all"}) | set(ALL)
     if "exact" in names: names = (names-{"exact"}) | set(EXACT)
     if "merge" in names: names.add("weights")  # its weight gradients leave through the update's cast
     if names-set(ALL): raise ValueError(f"unknown speedups: {sorted(names-set(ALL))}")
+    return names
+
+
+def formal(spec):
+    """Whether a formal run accepts the selection: only patches that reproduce the default path bit for bit."""
+    try: return selection(spec) <= set(EXACT)
+    except ValueError: return False
+
+
+def install(spec="all"):
+    """Activate the named patches once per process; returns the sorted active names."""
+    global _installed
+    names = selection(spec)
     if _installed is not None:
         if _installed != names: raise RuntimeError("speedups are already installed with another selection")
         return sorted(names)

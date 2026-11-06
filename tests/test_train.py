@@ -140,6 +140,30 @@ def test_a_later_research_option_overrides_a_launcher_formal_one(tmp_path):
     assert not train.parse(base+["--formal", "--research"]).formal
 
 
+def test_formal_runs_accept_only_bit_identical_speedups(tmp_path):
+    base = ["--config", "config.json", "--output", str(tmp_path), "--micro-batch", "2"]
+    assert train.parse(base).speedups == ""
+    for spec in ("exact", "norm,readout"):
+        assert train.parse(base+["--formal", "--speedups", spec]).speedups == spec
+    assert train.parse(base+["--speedups", "all"]).speedups == "all"
+    for spec in ("all", "exact,cudnn", "merge"):
+        with pytest.raises(SystemExit): train.parse(base+["--formal", "--speedups", spec])
+    with pytest.raises(SystemExit): train.parse(base+["--speedups", "fast"])
+
+
+def test_a_speedups_selection_holds_for_every_segment(tmp_path, monkeypatch):
+    from nexttransformer.runtime import speedups
+    run = runner("mla_nope", tmp_path, monkeypatch)
+    # The kernels need CUDA; what is tested here is how the trainer records and compares the selection.
+    monkeypatch.setattr(speedups, "install", lambda spec: sorted(speedups.selection(spec)))
+    monkeypatch.setattr(speedups, "active", lambda name: False)
+    run(tmp_path/"with", "--smoke-steps", "2", "--speedups", "exact")
+    assert json.loads((tmp_path/"with"/"provenance.json").read_text())["software"]["speedups"] == "exact"
+    with pytest.raises(ValueError, match="speedups"): run(tmp_path/"with")
+    run(tmp_path/"without", "--smoke-steps", "2")
+    with pytest.raises(ValueError, match="speedups"): run(tmp_path/"without", "--speedups", "exact")
+
+
 def test_deterministic_attention_option_runs_an_update(setup, tmp_path, monkeypatch):
     from nanochat import flash_attention
     monkeypatch.setattr(flash_attention, "USE_FA3", False)
