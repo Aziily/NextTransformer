@@ -15,6 +15,9 @@ export type ArenaRow={entry:ArenaEntry;run?:Run;method?:Method;core?:number;val?
 // The arena entry behind a method: the provenance every leaderboard row shows.
 export const provenance=(methodId:string,entries:ArenaEntry[])=>entries.find(e=>e.methodId===methodId);
 export const originOf=(methodId:string,entries:ArenaEntry[]):Exclude<Origin,'all'>=>provenance(methodId,entries)?'agent':'human';
+// Auto-research entries under the arena rules rank on CORE only, a test the research never ran on its own candidates;
+// their validation BPB is shown but not ranked. Legacy and retracted cards keep the ordinary leaderboard treatment.
+export const coreOnly=(methodId:string,entries:ArenaEntry[])=>entries.some(e=>e.methodId===methodId&&(e.status==='admitted'||e.status==='complete'));
 export const researcherName=(entry:ArenaEntry)=>entry.researcher.llms.map(m=>m.name).join(' + ')+(entry.researcher.framework.name==='none'?'':' · '+entry.researcher.framework.name);
 const final=(run:Run|undefined,kind:'core'|'val')=>run?.[kind].find(p=>p.step===FINAL_STEP&&Number.isFinite(p.value))?.value;
 const statusOrder:ArenaEntry['status'][]=['complete','admitted','legacy','retracted'];

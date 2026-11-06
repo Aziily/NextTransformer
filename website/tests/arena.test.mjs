@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {LEVELS,arenaRows,originOf,provenance,researcherName,researchers} from '../app/lib/arena.ts';
+import {LEVELS,arenaRows,coreOnly,originOf,provenance,researcherName,researchers} from '../app/lib/arena.ts';
 import {fullDenseBaseline} from '../app/lib/baseline.ts';
 import {FINAL_STEP,leaderboardEntries,preferredRuns} from '../app/lib/leaderboard.ts';
 import {arena,methods,runs} from './results.mjs';
 
-const ranks=(pool,metric)=>new Map(leaderboardEntries(pool,metric,'final',undefined).flatMap(e=>e.rank===undefined?[]:[[e.run.id,e.rank]]));
+const ranks=(pool,metric)=>new Map(leaderboardEntries(pool,metric,'final',undefined,run=>coreOnly(run.methodId,arena())).flatMap(e=>e.rank===undefined?[]:[[e.run.id,e.rank]]));
 const published=()=>{const all=runs(),pool=preferredRuns(all);return {all,pool,baseline:fullDenseBaseline(all),ranks:{core:ranks(pool,'core'),val:ranks(pool,'val')}};};
 
 test('every published card names a model card and its runs, with a known involvement level',()=>{
@@ -41,9 +41,24 @@ test('provenance marks arena methods only, and rows without a run stay unranked'
  assert.equal(row.run,undefined);
  assert.equal(row.rankCore,undefined);
  assert.equal(row.coreDelta,undefined);
- assert.deepEqual(rows.map(x=>x.entry.status),['admitted','legacy']);
- const groups=researchers(rows);
- assert.equal(groups.length,1);
- assert.equal(groups[0].rows.length,2);
- assert.deepEqual(groups[0].levels,['L3']);
+ const order=['complete','admitted','legacy','retracted'],statuses=rows.map(x=>x.entry.status);
+ assert.deepEqual(statuses,[...statuses].sort((a,b)=>order.indexOf(a)-order.indexOf(b)));
+ const groups=researchers(rows),legacy=groups.find(g=>g.rows.some(x=>x.entry.id==='circle-loop'));
+ assert.equal(groups.reduce((n,g)=>n+g.rows.length,0),rows.length);
+ assert.ok(legacy.levels.includes('L3'));
+});
+
+test('arena entries rank on CORE only and keep their measured validation BPB',()=>{
+ const cards=arena(),{all,pool,baseline,ranks:r}=published();
+ for(const card of cards.filter(c=>c.status==='complete')){
+  assert.ok(coreOnly(card.methodId,cards),card.id);
+  const [row]=arenaRows([card],all,methods(),baseline,r);
+  assert.equal(row.rankCore,r.core.get(row.run.id));
+  assert.equal(row.rankVal,undefined);
+  assert.equal(row.val,row.run.val.find(p=>p.step===FINAL_STEP).value);
+  const val=leaderboardEntries(pool,'val','final',undefined,run=>coreOnly(run.methodId,cards)).find(e=>e.run.id===row.run.id);
+  assert.ok(val.coreOnly&&val.rank===undefined&&val.val===row.val);
+ }
+ assert.equal(coreOnly('circle',cards),false);
+ assert.notEqual(r.val.get('circle'),undefined);
 });

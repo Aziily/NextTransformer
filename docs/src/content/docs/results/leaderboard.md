@@ -8,7 +8,8 @@ The interactive leaderboard, with replay over training, every CORE task and the 
 `python -m nexttransformer.export_run --summary`.
 
 Validation BPB is the periodic evaluation at update 46,875; CORE is shown ×100. Δ columns are differences from the
-full-attention **Dense Baseline** at the same checkpoint: below zero is better for BPB, above zero for CORE.
+full-attention **Dense Baseline** at the same checkpoint: below zero is better for BPB, above zero for CORE. Rows are
+ordered by CORE. Arena entries (auto-research) rank on CORE only; their validation BPB is shown, not ranked.
 
 <!-- generated:leaderboard -->
 | Model | Family | Val BPB ↓ | Δ BPB | CORE ↑ | Δ CORE | Training GFLOPs / token |

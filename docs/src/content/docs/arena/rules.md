@@ -89,9 +89,10 @@ the formal run, or replayed a prefix of it and matched the logged training loss)
 
 ## Ranking
 
-Arena entries are ranked on the main leaderboard with the same rules as every other run: measured values at update
-46,875, nothing interpolated, incomplete runs unranked. The leaderboard marks each run's provenance and can filter by
-it. Research budgets are disclosed, not controlled, so comparisons between researchers are descriptive.
+Arena entries are ranked on the main leaderboard by CORE only, with the same rules as every other run: measured values
+at update 46,875, nothing interpolated, incomplete runs unranked. Their validation BPB is measured and shown but not
+ranked. The leaderboard marks each run's provenance and can filter by it. Research budgets are disclosed, not
+controlled, so comparisons between researchers are descriptive.
 
 ## Checks
 
