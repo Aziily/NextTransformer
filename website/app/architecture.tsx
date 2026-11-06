@@ -88,6 +88,7 @@ const DESCRIPTIONS: Record<string, [string, string]> = {
   ],
   "elu_qknorm": ["A fixed q/k scale", "RMS-normalized, temperature-scaled q/k feed positive features; the state is read without a denominator and normalized per head."],
   "gdn": ["Scalar gate + delta update", "One learned decay per head shrinks the memory; the delta rule then corrects it."],
+  "gsa_qknorm": ["Gated slot memory", "Keys and values are written into 64 gated slots; each query reads them back through a softmax over slots."],
   "mqa": ["One shared key/value head", "All twelve query heads read the same key and value projections."],
   "gqa": ["Three key/value groups", "Each key/value head serves four query heads."],
   "mla_qknorm": ["Attention through a compressed latent", "Keys and values are rebuilt from a 256-dimensional latent; q and k are RMS-normalized."],
@@ -587,6 +588,23 @@ export default function Architecture({ methodId, large = false, nodes, loop = tr
       </>;
       break;
     }
+    case 'gsa_qknorm':
+      viewBox = '0 80 600 166';
+      body = <>
+        <Text x={514} y={104} size={14} anchor="end" weight={600} color={C.purple}>v</Text>
+        <Path d="M524 86V110" color={C.purple}/>
+        <Box x={20} y={116} w={130} h={56} title="q, k" sub="QK-norm · SiLU" tone="blue"/>
+        <Path d="M152 144H170" color={C.purple}/>
+        <Box x={176} y={116} w={130} h={56} title="Key slots" sub="64 slots · gated" tone="purple"/>
+        <Path d="M308 144H326" color={C.purple}/>
+        <Box x={332} y={116} w={110} h={56} title="Slot softmax" sub="query → slots" tone="rose"/>
+        <Path d="M444 144H462" color={C.purple}/>
+        <Box x={468} y={116} w={112} h={56} title="Value slots" sub="slots → output" tone="purple"/>
+        <Path d="M241 174V190H524V174" color={C.purple} arrow={false} dashed/>
+        <Text x={382} y={208} size={12} anchor="middle" color={C.purple}>one per-slot gate: decay α, write 1 − α</Text>
+        <Caption y={238}>24 layers · two slot memories, read with a softmax over 64 slots</Caption>
+      </>;
+      break;
     case 'gdn_hybrid':
       body = <>
         <rect x={40} y={78} width={530} height={118} rx={16} fill="#FBF9FE" stroke="#D6C7E9" strokeDasharray="5 5"/>
