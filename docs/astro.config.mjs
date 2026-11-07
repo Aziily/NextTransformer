@@ -42,7 +42,7 @@ export default defineConfig({
         group('Methods', '方法', ['methods/zoo', 'methods/sources', 'methods/configurations']),
         group('Guides', '指南', [
           'guides/training', 'guides/configuration', 'guides/plugins', 'guides/submit-a-result', 'guides/reproduce',
-          'guides/metrics', 'guides/changing-shared-code', 'guides/24-gib-gpus',
+          'guides/metrics', 'guides/profiling', 'guides/changing-shared-code', 'guides/24-gib-gpus',
         ]),
         group('Results', '结果', [
           'results/leaderboard', 'results/records', 'results/evidence',
