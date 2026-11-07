@@ -1,0 +1,20 @@
+/* Reuse the Arena surfaces, typography and observatory theme; only table layout is new. */
+.arena-example-table-wrap { overflow-x:auto; }
+.arena-example-table { width:100%; border-collapse:collapse; text-align:left; font-size:14px; font-variant-numeric:tabular-nums; }
+.arena-example-table th,.arena-example-table td { padding:16px 20px; border-bottom:1px solid var(--line); color:var(--ink-soft); }
+.arena-example-table thead th { font-size:12px; font-weight:500; color:var(--muted-ink); white-space:nowrap; }
+.arena-example-table tbody th { font-weight:600; }
+.arena-example-table tr:last-child > * { border-bottom:0; }
+.arena-example-table code { font-size:12px; overflow-wrap:anywhere; }
+.arena-example .arena-lower { grid-template-columns:minmax(0,1.15fr) minmax(0,1fr); }
+.arena-example .arena-panel { min-width:0; }
+.arena-example .arena-panel .arena-example-table th,.arena-example .arena-panel .arena-example-table td { padding:14px 8px; }
+.arena-example-filter { display:flex; align-items:center; gap:8px; margin:18px 0 8px; font-size:13px; color:var(--muted-ink); }
+.arena-example-filter input { accent-color:var(--accent); }
+.arena-example .arena-example-caption { font-size:12px; }
+.arena-example details { padding:18px 0; border-bottom:1px solid var(--line); }
+.arena-example details:last-child { border-bottom:0; }
+.arena-example summary { cursor:pointer; color:var(--ink-strong); font-weight:600; font-size:14px; }
+.arena-example summary:focus-visible,.arena-example input:focus-visible { outline:2px solid var(--accent); outline-offset:4px; }
+.arena-example details p { font-size:13px; }
+@media(max-width:760px) { .arena-example .arena-lower { grid-template-columns:1fr; } }

@@ -9,11 +9,9 @@ description: What is coming next to NextTransformer.
    - The repository runs as the gym's sidecar service and exposes its interfaces to the model.
    - The model develops inside a closed container.
    - The agent can read the repository's full history and search the web to find the best architecture.
-2. **Three splits.**
-   - Training: the ClimbMix training shards.
-   - Validation: the last shard of the training data.
-   - Test: CORE-22.
-   - The agent tunes on training and validation; the final score comes only from the unseen CORE-22.
+2. **Separate research from formal evaluation.**
+   - Research uses ClimbMix training data and the dev shard, `shard_06541.parquet`.
+   - The formal validation shard, `shard_06542.parquet`, and CORE-22 are reserved for formal reporting, not candidate selection.
 3. **The submission is a single file.** The gym then runs the final training itself.
 
 4. **Gym interfaces.**
@@ -30,10 +28,21 @@ description: What is coming next to NextTransformer.
      draws on a fixed research allocation; when it runs out, experiments stop.
    - **Submission:** `finalize` freezes one candidate as the final file.
 
-Later:
+### Gym experiment plan
 
-- **Anti-hack checks:** inspect the auto-research system's final trajectory for hacking.
-- **Visual dashboard:** show how the system evolves from the starting architecture to its final result.
+- **Models and harness:** Opus, GLM and DeepSeek, each researching independently through Claude Code and Gym MCP. Pin model and client versions before launch.
+- **Initial settings:** share the same code/reference snapshot, ClimbMix data order, tokenizer, 2,048-token context, seed 42, 1,048,576 tokens/update and original optimizer/learning-rate protocol. Research uses training loss and dev only; formal validation and CORE-22 remain reserved.
+- **Research strategy:** the model chooses its initial architecture, controls, candidate count, experiment lengths, search and stopping strategy. Do not prescribe training steps or search rounds.
+- **Model calls:** no spending cap; record tokens and actual cost.
+- **Research compute cap:** **1.96×10²⁰ FLOPs per model session**, shared across training, evaluation, checks and failed attempts, without per-candidate quotas. One session for each of the three models gives a total research cap of **5.88×10²⁰ FLOPs**. Final formal training is separate.
+- **Budget basis:** Arena v1 Stage 2 recorded 17 attempts, including cancellations and retries. Estimate capacity at 20 anchor-equivalent 2,000-update runs: `20 × 2,000 × 1,048,576 × 4.67239832544785e9 ≈ 1.96×10²⁰ FLOPs`. This sizes the allocation; it neither prescribes 20 experiments of 2,000 updates nor reconstructs v1's actual FLOPs ledger.
+- **Scheduling reference:** v1 search and transfer checks used `549.7 + 42.1 = 591.8` GPU-hours. With 20% headroom, allow **about 710 GPU-hours per model, or 89 hours on a comparable eight-GPU setup**. Actual time depends on the model's experiments and throughput; GPU-hours are not an additional hard cap.
+- **Goal:** compare the architectures each model discovers autonomously under equal research compute, then verify final submissions under the same formal training protocol.
+
+### Arena results example
+
+Start with a [frontend example](../../arena-example.html): model, harness, research budget and status at the top; candidate dev results and baseline improvements in the middle; expandable architecture changes, formal results and evidence below.
+Use historical Arena v1 research data for the example. Mark Opus, GLM and DeepSeek as planned and leave formal scores empty until real run records are connected.
 
 ## November 2026: scaling
 

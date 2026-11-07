@@ -10,6 +10,7 @@ import {leaderboardEntries,preferredRuns} from './lib/leaderboard';
 import type {Method,Run} from './lib/types';
 import {protocolLabel} from './lib/labels';
 import './arena.css';
+import ArenaExample from './arena-example';
 
 const fixed=(v:number|undefined,n:number,scale=1)=>v===undefined?'—':(v*scale).toFixed(n);
 const signed=(v:number,n:number,scale=1)=>(Math.abs(v*scale)<.5*10**-n?'±':v>0?'+':'−')+Math.abs(v*scale).toFixed(n);
@@ -20,6 +21,7 @@ const STEPS=[['01','Propose the method','Open an issue describing the method and
 export default function Arena({runs,methods,baseline,onModel,onDetails,onCompare,onCommunity}:{runs:Run[];methods:Method[];baseline?:Run;onModel:(method:Method)=>void;onDetails:(run:Run)=>void;onCompare:(run:Run)=>void;onCommunity?:()=>void}){
  const [open,setOpen]=useState<ArenaRow|null>(null);
  useEffect(()=>{if(!open)return;const previous=document.body.style.overflow;document.body.style.overflow='hidden';const close=(e:KeyboardEvent)=>{if(e.key==='Escape')setOpen(null);};window.addEventListener('keydown',close);return()=>{document.body.style.overflow=previous;window.removeEventListener('keydown',close);};},[open]);
+ if(new URLSearchParams(window.location.search).get('arena-example')==='1')return <ArenaExample/>;
  const pool=preferredRuns(runs);
  const ranks=(metric:'core'|'val')=>new Map(leaderboardEntries(pool,metric,'final',undefined,run=>coreOnly(run.methodId,arenaEntries)).flatMap(e=>e.rank===undefined?[]:[[e.run.id,e.rank] as [string,number]]));
  const coreRanks=ranks('core'),rows=arenaRows(arenaEntries,runs,methods,baseline,{core:coreRanks,val:ranks('val')}),groups=researchers(rows);
