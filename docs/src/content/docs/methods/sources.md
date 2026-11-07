@@ -132,6 +132,7 @@ one GDN layer in three also has VE. VE enters GDN layers through the projected-V
 | `dense` (SSSL) | 24 blocks: 18 short-window (512) and 6 global layers | The historical model and the frozen compute anchor; listed under Others because only full-attention Dense is a baseline. |
 | `mqa`, `gqa` | Native attention with fewer key/value heads (`n_kv_head`), sharing RoPE and QK normalization | Trained from a frozen source revision; the mainline port is pending. |
 | `mla_qknorm`, `mla_nope_qknorm` | Multi-head latent attention with QK normalization, with and without rotary dimensions | Trained from a frozen source revision; the mainline port is pending. |
+| `cla` | [CLA v3](https://arxiv.org/abs/2405.12981), CLA2: a layer attends with the keys and values of the layer below it; queries, attention and output projections stay per layer | Plugin. Pairs follow the shell's value-embedding layers, so no value embedding is dropped: each layer without value embeddings reuses the layer below, and the last layer keeps its own. Shares full multi-head K/V; the paper's best configurations combine CLA with MQA or GQA. 25 layers, 13 with their own K/V. |
 
 MLA reconstructs K/V explicitly for training and uses the common attention interface; it has no reconstructed-head QK
 norm or output gate. Unnormalized MLA can show logit growth under Muon; the QK-normalized rows are registered separately.

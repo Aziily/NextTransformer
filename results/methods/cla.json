@@ -1,0 +1,37 @@
+{
+  "id": "cla",
+  "name": "Cross-Layer Attention · CLA",
+  "family": "others",
+  "status": "pending",
+  "tagline": "Adjacent layers share one set of keys and values, so decoding caches about half as many.",
+  "description": "CLA2 on the Dense baseline's shell: a layer without value embeddings attends with the keys and values of the layer below it, and only the lower layer of each pair projects and caches them. Queries, attention and output projections stay per layer. With the saved projections the budget buys two more layers, 25 in total, of which 13 keep their own keys and values.",
+  "paperTitle": "Reducing Transformer Key-Value Cache Size with Cross-Layer Attention",
+  "paperUrl": "https://arxiv.org/abs/2405.12981",
+  "mechanism": [
+    "Pairs follow the value-embedding layers: every layer without value embeddings reuses the keys and values of the layer below; the last layer keeps its own",
+    "25 full-attention layers, 12 heads of 128, FFN 6144; 13 of them project and cache keys and values",
+    "Cached decoding computes the same function as the full forward; the cache holds 13 of 25 layers"
+  ],
+  "limitations": "The paper pairs CLA with MQA or GQA; this registration shares full multi-head keys and values, so its saving is the sharing alone. Trained from scratch at a 2,048-token context, so savings at longer contexts are not measured. Registered within the shared budget; no formal result is published yet. Parameters, memory and speed are outcomes, not controls.",
+  "diagram": "custom",
+  "architecture": {
+    "kind": "custom",
+    "nodes": [
+      "Embedding",
+      "Attention with own K/V",
+      "(own K/V, reused K/V) ×12",
+      "LM head"
+    ],
+    "loop": false
+  },
+  "blocks": 25,
+  "ffn": 6144,
+  "params": 1406142364,
+  "flops": 4.712241,
+  "error": 0.853,
+  "codeUrl": "https://github.com/Interactive-Active-AI/NextTransformer/blob/main/nexttransformer/methods/cla/__init__.py",
+  "cohort": "reference-v1",
+  "sourceUrl": "https://interactive-active-ai.github.io/NextTransformer/docs/methods/sources/#others",
+  "costModel": "reference-aten-math-v2",
+  "order": 46
+}
